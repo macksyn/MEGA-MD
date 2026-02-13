@@ -14,11 +14,18 @@
  temp/
  
  # Session files
- session/
- 
+session/
+*.json
 
- # Environment variables
- .env
+ # Environment files
+.env
+.env.local
+.env.production
+
+# Temporary files
+temp/
+tmp/
+*.log
  
  # Log files
  *.log
