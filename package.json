@@ -1,6 +1,6 @@
 {
-  "name": "mega",
-  "version": "5.2.0",
+  "name": "hedra",
+  "version": "1.0.0",
   "description": "WhatsApp Bot",
   "main": "index.js",
   "directories": {
@@ -28,21 +28,21 @@
     "whatsapp-api",
     "baileys-bot",
     "whatsApp",
-    "mega-bot",
-    "mega-md",
+    "hedra-bot",
+    "hedra-md",
     "multi-device",
-    "mega-ai"
+    "hedraai"
   ],
-  "homepage": "https://github.com/GlobalTechInfo/MEGA-MD",
+  "homepage": "https://github.com/macksyn/HEDRA-AI",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GlobalTechInfo/MEGA-MD.git"
+    "url": "git+https://github.com/macksyn/HEDRA-AI.git"
   },
   "bugs": {
-    "url": "https://github.com/GlobalTechInfo/MEGA-MD/issues"
+    "url": "https://github.com/macksyn/HEDRA-AI/issues"
   },
   "license": "MIT",
-  "author": "GlobalTechInfo",
+  "author": "Alex Macksyn",
   "dependencies": {
     "@adiwajshing/keyed-db": "^0.2.4",
     "@hapi/boom": "^10.0.1",
@@ -110,11 +110,11 @@
   },
   "contributors": [
     {
-      "name": "Qasim Ali",
+      "name": "Alex Macksyn",
       "role": "Lead Developer"
     },
     {
-      "name": "GlobalTechInfo",
+      "name": "Macksyn Inc",
       "role": "Maintainer"
     }
   ]

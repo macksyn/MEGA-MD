@@ -487,7 +487,7 @@ async function startQasimDev() {
                             isForwarded: true,
                             forwardedNewsletterMessageInfo: {
                                 newsletterJid: '120363319098372999@newsletter',
-                                newsletterName: 'MEGA MD',
+                                newsletterName: 'Groq',
                                 serverMessageId: -1
                             }
                         }
@@ -497,12 +497,12 @@ async function startQasimDev() {
                 }
 
                  await delay(1999);
-                console.log(chalk.yellow(`\n\n                  ${chalk.bold.blue(`[ ${global.botname || 'MEGA-MD'} ]`)}\n\n`));
+                console.log(chalk.yellow(`\n\n                  ${chalk.bold.blue(`[ ${global.botname || 'Groq-AI'} ]`)}\n\n`));
                 console.log(chalk.cyan(`< ================================================== >`));
-                console.log(chalk.magenta(`\n${global.themeemoji || '•'} YT CHANNEL: GlobalTechInfo`));
-                console.log(chalk.magenta(`${global.themeemoji || '•'} GITHUB: GlobalTechInfo`));
+                console.log(chalk.magenta(`\n${global.themeemoji || '•'} YT CHANNEL: Gist HQ`));
+                console.log(chalk.magenta(`${global.themeemoji || '•'} GITHUB: Alex Macksyn`));
                 console.log(chalk.magenta(`${global.themeemoji || '•'} WA NUMBER: ${owner}`));
-                console.log(chalk.magenta(`${global.themeemoji || '•'} CREDIT: Qasim Ali`));
+                console.log(chalk.magenta(`${global.themeemoji || '•'} CREDIT: Alex Macksyn`));
                 console.log(chalk.green(`${global.themeemoji || '•'} 🤖 Bot Connected Successfully! ✅`));
                 console.log(chalk.blue(`Bot Version: ${settings.version}`));
                 console.log(chalk.cyan(`Loaded Commands: ${commandHandler.commands.size}`));
@@ -566,7 +566,7 @@ async function startQasimDev() {
 
 
 async function main() {
-    printLog('info', 'Starting MEGA MD BOT...');
+    printLog('info', 'Starting Groq AI...');
     
     const sessionReady = await initializeSession();
     

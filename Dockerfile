@@ -1,10 +1,27 @@
-FROM quay.io/qasimtech/mega-bot:latest
+FROM node:20-slim
 
-WORKDIR /root/mega-md
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    webp \
+    git \
+    imagemagick \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/GlobalTechInfo/MEGA-MD . && \
-    npm install
+WORKDIR /app
 
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install --legacy-peer-deps
+
+# Copy application files
+COPY . .
+
+# Expose port
 EXPOSE 5000
 
+# Start command
 CMD ["npm", "start"]

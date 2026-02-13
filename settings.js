@@ -1,21 +1,21 @@
 const settings = {
   prefixes: ['.', '!', '/', '#'], // Multiple prefix support you can add one or more
   packname: 'MEGA-MD',
-  author: '‎GlobalTechInfo',
-  timeZone: 'Asia/Karachi',
-  botName: "MEGA-MD", // your bot name
-  botOwner: 'Qasim Ali', // set your name
-  ownerNumber: '923051391007', // Set your number here without + symbol, just add country code & number without any space
+  author: '‎Macksyn Inc',
+  timeZone: 'Africa/Lagos',
+  botName: "Lussh", // your bot name
+  botOwner: 'Alex Macksyn', // set your name
+  ownerNumber: '2348166353338', // Set your number here without + symbol, just add country code & number without any space
   giphyApiKey: 'qnl7ssQChTdPjsKta2Ax2LMaGXz303tq',
   commandMode: "public",
   maxStoreMessages: 20,
   tempCleanupInterval: 1 * 60 * 60 * 1000, // 1 hours
   storeWriteInterval: 10000,
   description: "This is a bot for managing group commands and automating tasks.",
-  version: "5.1.0",
-  updateZipUrl: "https://github.com/GlobalTechInfo/MEGA-MD/archive/refs/heads/main.zip",
-  channelLink: "https://whatsapp.com/channel/0029VagJIAr3bbVBCpEkAM07",
-  ytch: "GlobalTechInfo"
+  version: "1.0.0",
+  updateZipUrl: "",
+  channelLink: "https://whatsapp.com/channel/0029Vad8fY6HwXbB83yLIx2n",
+  ytch: ""
 };
 
 module.exports = settings;
