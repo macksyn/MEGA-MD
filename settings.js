@@ -1,7 +1,7 @@
 const settings = {
   prefixes: ['.', '!', '/', '#'], // Multiple prefix support you can add one or more
   packname: 'MEGA-MD',
-  author: '‎Macksyn Inc',
+  author: 'Macksyn Inc',
   timeZone: 'Africa/Lagos',
   botName: "Lussh", // your bot name
   botOwner: 'Alex Macksyn', // set your name
