@@ -1,11 +1,11 @@
 const settings = {
   prefixes: ['.', '!', '/', '#'], // Multiple prefix support you can add one or more
-  packname: 'MEGA-MD',
+  packname: 'Groq AI',
   author: 'Macksyn Inc',
   timeZone: 'Africa/Lagos',
-  botName: "Lussh", // your bot name
+  botName: "Groq", // your bot name
   botOwner: 'Alex Macksyn', // set your name
-  ownerNumber: '2348166353338', // Set your number here without + symbol, just add country code & number without any space
+  ownerNumber: '2348089782988', // Set your number here without + symbol, just add country code & number without any space
   giphyApiKey: 'qnl7ssQChTdPjsKta2Ax2LMaGXz303tq',
   commandMode: "public",
   maxStoreMessages: 20,
