@@ -47,7 +47,7 @@ module.exports = {
         `*Platform:* ${platform} (${arch})\n` +
         `*Node.js:* ${nodeVersion}\n`;
 
-      await sock.sendMessage(chatId, {
+      /*await sock.sendMessage(chatId, {
         text,
         contextInfo: {
           forwardingScore: 999,
@@ -58,7 +58,9 @@ module.exports = {
             serverMessageId: -1
           }
         }
-      }, { quoted: message });
+      }, { quoted: message });*/
+      
+      await sock.sendMessage(chatId, { text }, { quoted: message });
 
     } catch (error) {
       console.error('Error in alive command:', error);
