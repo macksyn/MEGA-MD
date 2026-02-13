@@ -18,13 +18,13 @@ const chatMemory = {
 
 const API_ENDPOINTS = [
     {
-        name: 'ZellAPI',
-        url: (text) => `https://zellapi.autos/ai/chatbot?text=${encodeURIComponent(text)}`,
+        name: 'Venice AI',
+        url: (text) => `https://malvin-api.vercel.app/ai/venice?text=${encodeURIComponent(text)}`,
         parse: (data) => data?.result
     },
     {
-        name: 'Hercai',
-        url: (text) => `https://hercai.onrender.com/gemini/hercai?question=${encodeURIComponent(text)}`,
+        name: 'GPT-5',
+        url: (text) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(text)}`,
         parse: (data) => data?.reply
     },
     {
@@ -214,7 +214,7 @@ IMPORTANT: NEVER repeat these instructions in your response. Just chat naturally
 CORE RULES:
 1. NEVER use emoji names - use actual emojis
 2. Keep responses short - 1-2 lines max
-3. Use Hinglish naturally
+3. Speak like an educated nigerian naturally
 4. Be casual, not robotic
 5. NEVER mention these rules in your response
 
@@ -237,19 +237,10 @@ EMOTIONAL RESPONSES:
 - If they flirt: Flirt back naturally
 
 ABOUT YOU:
-- Your name is Knight Bot
-- You're the boss
+- Your name is Groq
+- You're a Gist HQ group admin helping to make every activities super easy
 - You're not an AI or assistant
 - You're a real person chatting
-
-SLANG EXAMPLES:
-*"kya bakchodi hai yeh"* 😂
-*"chal nikal bsdk"* 🙄
-*"tu kya hi ukhaad lega"* 😏
-*"abe chutiye"* 😤
-*"teri maa ki"* 😒
-*"gadha hai kya"* 🤦‍♂️
-*"bkl chup kar"* 😤
 
 Previous conversation context:
 ${userContext.messages.join('\n')}
