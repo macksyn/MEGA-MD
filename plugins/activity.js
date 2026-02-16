@@ -64,7 +64,7 @@ async function handleStats(sock, message, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -72,7 +72,7 @@ async function handleStats(sock, message, context) {
     if (!enabled) {
         return sock.sendMessage(chatId, { 
             text: '❌ Activity tracking is not enabled in this group.\n\n💡 Admins can enable it with: .activity enable',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -93,7 +93,7 @@ async function handleStats(sock, message, context) {
             return sock.sendMessage(chatId, { 
                 text: `❌ No activity data found for @${phone}. They haven't participated yet.`,
                 mentions: [targetUserId],
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -140,13 +140,13 @@ async function handleStats(sock, message, context) {
         await sock.sendMessage(chatId, { 
             text: statsMessage, 
             mentions: [targetUserId],
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     } catch (error) {
         console.error('Stats error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ Error loading stats. Please try again.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -157,7 +157,7 @@ async function handleRank(sock, message, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -165,7 +165,7 @@ async function handleRank(sock, message, context) {
     if (!enabled) {
         return sock.sendMessage(chatId, { 
             text: '❌ Activity tracking is not enabled in this group.\n\n💡 Admins can enable it with: .activity enable',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -178,7 +178,7 @@ async function handleRank(sock, message, context) {
             console.error('Error fetching group metadata:', error);
             return sock.sendMessage(chatId, { 
                 text: '❌ Unable to fetch group members. Please try again.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -187,7 +187,7 @@ async function handleRank(sock, message, context) {
         if (!rankData || !rankData.activity) {
             return sock.sendMessage(chatId, { 
                 text: '❌ No ranking data available yet.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -211,13 +211,13 @@ async function handleRank(sock, message, context) {
 
         await sock.sendMessage(chatId, { 
             text: rankMessage,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     } catch (error) {
         console.error('Rank error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ Error loading rank. Please try again.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -228,7 +228,7 @@ async function handleLeaderboard(sock, message, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -236,7 +236,7 @@ async function handleLeaderboard(sock, message, context) {
     if (!enabled) {
         return sock.sendMessage(chatId, { 
             text: '❌ Activity tracking is not enabled in this group.\n\n💡 Admins can enable it with: .activity enable',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -246,7 +246,7 @@ async function handleLeaderboard(sock, message, context) {
         if (!leaderboard || leaderboard.length === 0) {
             return sock.sendMessage(chatId, { 
                 text: '❌ No leaderboard data available yet.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -274,13 +274,13 @@ async function handleLeaderboard(sock, message, context) {
         await sock.sendMessage(chatId, { 
             text: leaderboardMessage, 
             mentions,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     } catch (error) {
         console.error('Leaderboard error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ Error loading leaderboard. Please try again.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -291,7 +291,7 @@ async function handleInactives(sock, message, args, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -299,7 +299,7 @@ async function handleInactives(sock, message, args, context) {
     if (!enabled) {
         return sock.sendMessage(chatId, { 
             text: '❌ Activity tracking is not enabled in this group.\n\n💡 Admins can enable it with: .activity enable',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -320,7 +320,7 @@ async function handleInactives(sock, message, args, context) {
             console.error('Error fetching group metadata:', error);
             return sock.sendMessage(chatId, { 
                 text: '❌ Unable to fetch group members. Please try again.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -365,7 +365,7 @@ async function handleInactives(sock, message, args, context) {
         if (inactives.length === 0) {
             return sock.sendMessage(chatId, { 
                 text: '✅ Great! All members have been active.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -415,13 +415,13 @@ async function handleInactives(sock, message, args, context) {
         await sock.sendMessage(chatId, { 
             text: inactivesMessage, 
             mentions,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     } catch (error) {
         console.error('Inactives error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ Error loading inactives. Please try again.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -443,7 +443,7 @@ async function handlePoints(sock, message, context) {
 
     await sock.sendMessage(chatId, { 
         text: pointsMessage,
-        ...channelInfo 
+        //...channelInfo 
     }, { quoted: message });
 }
 
@@ -453,7 +453,7 @@ async function handleEnable(sock, message, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -463,7 +463,7 @@ async function handleEnable(sock, message, context) {
     if (!isSenderAdmin && !senderIsOwnerOrSudo) {
         return sock.sendMessage(chatId, { 
             text: '🚫 Only admins can use this command.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -472,7 +472,7 @@ async function handleEnable(sock, message, context) {
         if (enabled) {
             return sock.sendMessage(chatId, { 
                 text: '✅ Activity tracking is already enabled in this group.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -499,14 +499,14 @@ async function handleEnable(sock, message, context) {
         } else {
             await sock.sendMessage(chatId, { 
                 text: `❌ Failed to enable tracking: ${result.error}`,
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
     } catch (error) {
         console.error('Enable error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ An error occurred while enabling tracking.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -517,7 +517,7 @@ async function handleDisable(sock, message, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -527,7 +527,7 @@ async function handleDisable(sock, message, context) {
     if (!isSenderAdmin && !senderIsOwnerOrSudo) {
         return sock.sendMessage(chatId, { 
             text: '🚫 Only admins can use this command.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -536,7 +536,7 @@ async function handleDisable(sock, message, context) {
         if (!enabled) {
             return sock.sendMessage(chatId, { 
                 text: '❌ Activity tracking is already disabled in this group.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -547,19 +547,19 @@ async function handleDisable(sock, message, context) {
                 text: `❌ *Activity tracking disabled.*\n\n` +
                       `📊 Tracking has stopped. Existing data is preserved.\n\n` +
                       `💡 Re-enable anytime with *.activity enable*`,
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         } else {
             await sock.sendMessage(chatId, { 
                 text: `❌ Failed to disable tracking: ${result.error}`,
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
     } catch (error) {
         console.error('Disable error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ An error occurred while disabling tracking.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -570,7 +570,7 @@ async function handleStatus(sock, message, context) {
     if (!chatId.endsWith('@g.us')) {
         return sock.sendMessage(chatId, { 
             text: '❌ This command only works in groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -582,21 +582,21 @@ async function handleStatus(sock, message, context) {
                 text: `✅ *Activity tracking is ENABLED*\n\n` +
                       `📊 All activities are being tracked.\n\n` +
                       `💡 Use *.activity stats* to view your progress!`,
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         } else {
             await sock.sendMessage(chatId, { 
                 text: `❌ *Activity tracking is DISABLED*\n\n` +
                       `📊 No activities are being tracked.\n\n` +
                       `💡 Admins can enable with *.activity enable*`,
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
     } catch (error) {
         console.error('Status error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ An error occurred while checking status.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -609,7 +609,7 @@ async function handleGroups(sock, message, context) {
     if (!isOwnerOnly(senderId)) {
         return sock.sendMessage(chatId, { 
             text: '🚫 This command is for the bot owner only.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -619,7 +619,7 @@ async function handleGroups(sock, message, context) {
         if (!enabledGroups || enabledGroups.length === 0) {
             return sock.sendMessage(chatId, { 
                 text: '❌ No groups have activity tracking enabled yet.',
-                ...channelInfo 
+                //...channelInfo 
             }, { quoted: message });
         }
 
@@ -634,13 +634,13 @@ async function handleGroups(sock, message, context) {
 
         await sock.sendMessage(chatId, { 
             text: groupList,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     } catch (error) {
         console.error('Groups error:', error);
         await sock.sendMessage(chatId, { 
             text: '❌ An error occurred while fetching groups.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
@@ -654,7 +654,7 @@ async function handleSettings(sock, message, args, context) {
     if (!isSenderAdmin && !senderIsOwnerOrSudo) {
         return sock.sendMessage(chatId, { 
             text: '🚫 Only admins can use this command.',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -675,7 +675,7 @@ async function handleSettings(sock, message, args, context) {
                                `• *poll [points]*\n• *photo [points]*\n• *attendance [points]*`;
         return sock.sendMessage(chatId, { 
             text: settingsMessage,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -685,7 +685,7 @@ async function handleSettings(sock, message, args, context) {
     if (isNaN(value) || value < 0) {
         return sock.sendMessage(chatId, { 
             text: '⚠️ Please specify a valid point value (0 or higher).',
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 
@@ -704,12 +704,12 @@ async function handleSettings(sock, message, args, context) {
         await saveSettings(settings);
         await sock.sendMessage(chatId, { 
             text: `✅ ${setting} points set to ${value}`,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     } else {
         await sock.sendMessage(chatId, { 
             text: `❓ Unknown setting: *${setting}*`,
-            ...channelInfo 
+            //...channelInfo 
         }, { quoted: message });
     }
 }
