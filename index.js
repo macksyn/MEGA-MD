@@ -51,7 +51,7 @@ const {
 
 const settings = require('./settings');
 const commandHandler = require('./lib/commandHandler');
-const { startScheduler } = require('./plugins/birthday');
+const pluginLoader = require('./lib/pluginLoader');
 
 store.readFromFile();
 setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
@@ -115,52 +115,40 @@ process.on('SIGINT', () => {
 function ensureSessionDirectory() {
     const sessionPath = path.join(__dirname, 'session');
     if (!existsSync(sessionPath)) {
-        mkdirSync(sessionPath, { recursive: true, mode: 0o755 });
-        printLog('info', 'Session directory created with proper permissions');
+        mkdirSync(sessionPath, { recursive: true });
     }
-
-    // Verify write permissions
-    try {
-        const testFile = path.join(sessionPath, '.test');
-        fs.writeFileSync(testFile, 'test');
-        fs.unlinkSync(testFile);
-        printLog('success', 'Session directory has write permissions');
-    } catch (error) {
-        printLog('error', 'Session directory is not writable!');
-        throw new Error('Cannot write to session directory');
-    }
-
     return sessionPath;
 }
 
 function hasValidSession() {
     try {
         const credsPath = path.join(__dirname, 'session', 'creds.json');
-
+        
         if (!existsSync(credsPath)) {
             return false;
         }
-
+        
         const fileContent = fs.readFileSync(credsPath, 'utf8');
         if (!fileContent || fileContent.trim().length === 0) {
             printLog('warning', 'creds.json exists but is empty');
             return false;
         }
-
+        
         try {
             const creds = JSON.parse(fileContent);
-
-            // Check for essential keys
             if (!creds.noiseKey || !creds.signedIdentityKey || !creds.signedPreKey) {
                 printLog('warning', 'creds.json is missing required fields');
                 return false;
             }
-
-            // REMOVED: Don't delete session based on registered flag
-            // The registered flag may be false initially after pairing
-            // and gets updated by Baileys during connection
-
-            printLog('success', 'Valid session credentials found');
+            if (creds.registered === false) {
+                printLog('warning', 'Session credentials exist but are not registered');
+                try {
+                    rmSync(path.join(__dirname, 'session'), { recursive: true, force: true });
+                } catch (e) {}
+                return false;
+            }
+            
+            printLog('success', 'Valid and registered session credentials found');
             return true;
         } catch (parseError) {
             printLog('warning', 'creds.json contains invalid JSON');
@@ -174,28 +162,27 @@ function hasValidSession() {
 
 async function initializeSession() {
     ensureSessionDirectory();
-
-    // First check if we have a valid existing session
-    if (hasValidSession()) {
-        printLog('success', 'Existing session found. Using saved credentials');
-        return true;
-    }
-
-    // Then check for SESSION_ID in environment
+    
     const txt = global.SESSION_ID || process.env.SESSION_ID;
 
     if (!txt) {
         printLog('warning', 'No SESSION_ID found in environment variables');
-        printLog('info', 'Will use pairing code method if PAIRING_NUMBER is set');
+        if (hasValidSession()) {
+            printLog('success', 'Existing session found. Using saved credentials');
+            return true;
+        }
+        printLog('warning', 'No existing session found. Pairing code will be required');
         return false;
     }
-
-    printLog('info', 'Attempting to download session from SESSION_ID');
-
+    
+    if (hasValidSession()) {
+        return true;
+    }
+    
     try {
         await SaveCreds(txt);
         await delay(2000);
-
+        
         if (hasValidSession()) {
             printLog('success', 'Session file verified and valid');
             await delay(1000);
@@ -407,11 +394,11 @@ async function startQasimDev() {
         QasimDev.serializeM = (m) => smsg(QasimDev, m, store);
 
         const isRegistered = state.creds?.registered === true;
-
+        
         if (pairingCode && !isRegistered) {
             if (useMobile) throw new Error('Cannot use pairing code with mobile api');
 
-            printLog('warning', 'Session not registered. Pairing code will be generated');
+            printLog('warning', 'Session not registered. Pairing code required');
 
             let phoneNumberInput;
             if (!!global.phoneNumber) {
@@ -431,7 +418,7 @@ async function startQasimDev() {
             const pn = require('awesome-phonenumber');
             if (!pn('+' + phoneNumberInput).isValid()) {
                 printLog('error', 'Invalid phone number format');
-
+                
                 if (rl && !rl.closed) {
                     rl.close();
                 }
@@ -444,8 +431,7 @@ async function startQasimDev() {
                     code = code?.match(/.{1,4}/g)?.join("-") || code;
                     console.log(chalk.black(chalk.bgGreen(`Your Pairing Code : `)), chalk.black(chalk.white(code)));
                     printLog('success', `Pairing code generated: ${code}`);
-                    printLog('info', 'Session will be saved after successful connection');
-
+                    
                     if (rl && !rl.closed) {
                         rl.close();
                         rl = null;
@@ -455,7 +441,6 @@ async function startQasimDev() {
                 }
             }, 3000);
         } else if (isRegistered) {
-            printLog('success', 'Session already registered, connecting...');
             if (rl && !rl.closed) {
                 rl.close();
                 rl = null;
@@ -480,18 +465,10 @@ async function startQasimDev() {
             }
             
             if (connection == "open") {
-                    printLog('success', 'Bot connected successfully!');
-
-                    // Verify session was saved
-                    const sessionExists = hasValidSession();
-                    if (sessionExists) {
-                        printLog('success', 'Session saved and verified');
-                    } else {
-                        printLog('warning', 'Session may not have been saved properly');
-                    }
-
-                    const { startAutoBio } = require('./plugins/setbio');
-                    startAutoBio(QasimDev);  
+                printLog('success', 'Bot connected successfully!');
+                const { startAutoBio } = require('./plugins/setbio');
+                startAutoBio(QasimDev); 
+                await pluginLoader.start(QasimDev);
                 const ghostMode = await store.getSetting('global', 'stealthMode');
                 if (ghostMode && ghostMode.enabled) {
                     printLog('info', '👻 STEALTH MODE ACTIVE - Bot is in stealth mode');

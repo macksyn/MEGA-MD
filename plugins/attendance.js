@@ -1,9 +1,20 @@
 // plugins/attendance.js - MEGA-MD Attendance System
+// Migrated to self-contained plugin architecture.
+// Changes from original:
+//   - Removed: require('./birthday')  →  bus.emit('birthday:save', ...)
+//   - Removed: store.getAttendanceUserStats / updateAttendanceUserStats  →  db.get/set('user:…')
+//   - Removed: store.saveAttendanceRecord / getAttendanceRecords / deleteOldAttendanceRecords  →  db.get/set('records:…')
+//   - Removed: store.getSetting / saveSetting for settings  →  db.get/set('settings')
+//   - Removed: duplicate local saveBirthdayData function (birthday plugin owns birthday data)
+//   - Added:   onLoad() hook  →  loads settings, no manual call needed from index.js
+//   - Added:   onMessage() hook  →  auto-detection, no manual call needed from messageHandler.js
+//   - Fixed:   duplicate saveBirthdayData call bug in handleAutoAttendance
+
 const moment = require('moment-timezone');
-const store = require('../lib/lightweight_store');
 const isAdmin = require('../lib/isAdmin');
 const { isOwnerOrSudo } = require('../lib/isOwner');
-const { saveBirthdayData } = require('./birthday');
+const { createStore } = require('../lib/pluginStore');
+const bus = require('../lib/pluginBus');
 
 // Try to import activity tracker (optional dependency)
 let activityTracker;
@@ -15,6 +26,9 @@ try {
 
 // ===== TIMEZONE =====
 moment.tz.setDefault('Africa/Lagos');
+
+// ===== PLUGIN STORE =====
+const db = createStore('attendance');
 
 // ===== DEFAULT SETTINGS =====
 const defaultSettings = {
@@ -34,25 +48,21 @@ const userCache = new Map();
 const cacheTimeout = 5 * 60 * 1000; // 5 minutes
 
 // Cache cleanup
-function startCacheCleanup() {
-  setInterval(() => {
-    const now = Date.now();
-    for (const [userId, data] of userCache.entries()) {
-      if (now - data.timestamp > cacheTimeout) {
-        userCache.delete(userId);
-      }
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, data] of userCache.entries()) {
+    if (now - data.timestamp > cacheTimeout) {
+      userCache.delete(userId);
     }
-  }, 60000);
-}
-
-startCacheCleanup();
+  }
+}, 60000);
 
 // ===== SETTINGS MANAGEMENT =====
 let attendanceSettings = { ...defaultSettings };
 
 async function loadSettings() {
   try {
-    const settings = await store.getSetting('global', 'attendance_config');
+    const settings = await db.get('settings');
     if (settings) {
       attendanceSettings = { ...defaultSettings, ...settings };
     }
@@ -63,7 +73,7 @@ async function loadSettings() {
 
 async function saveSettings() {
   try {
-    await store.saveSetting('global', 'attendance_config', attendanceSettings);
+    await db.set('settings', attendanceSettings);
   } catch (error) {
     console.error('[ATTENDANCE] Error saving settings:', error);
   }
@@ -71,7 +81,7 @@ async function saveSettings() {
 
 // ===== USER MANAGEMENT =====
 async function initUser(userId) {
-  let userData = await store.getAttendanceUserStats(userId);
+  let userData = await db.get('user:' + userId);
   if (!userData) {
     userData = {
       userId,
@@ -83,17 +93,17 @@ async function initUser(userId) {
       createdAt: new Date(),
       updatedAt: new Date()
     };
-    await store.updateAttendanceUserStats(userId, userData);
+    await db.set('user:' + userId, userData);
   }
   return userData;
 }
 
 async function getUserData(userId) {
-  return await store.getAttendanceUserStats(userId);
+  return await db.get('user:' + userId);
 }
 
-async function updateUserData(userId, data) {
-  return await store.updateAttendanceUserStats(userId, data);
+async function updateUserData(userId, patch) {
+  await db.patch('user:' + userId, { ...patch, updatedAt: new Date() });
 }
 
 // ===== MONTH NAMES MAPPING =====
@@ -224,6 +234,7 @@ function formatBirthday(day, month, year, originalText) {
 }
 
 // ===== ATTENDANCE RECORD MANAGEMENT =====
+// Records are stored per-user as an array (newest first) under 'records:<userId>'.
 async function saveAttendanceRecord(userId, attendanceData) {
   try {
     const record = {
@@ -235,7 +246,10 @@ async function saveAttendanceRecord(userId, attendanceData) {
       streak: attendanceData.streak,
       timestamp: new Date()
     };
-    await store.saveAttendanceRecord(record);
+
+    const existing = await db.getOrDefault('records:' + userId, []);
+    existing.unshift(record); // newest first
+    await db.set('records:' + userId, existing);
     return true;
   } catch (error) {
     console.error('[ATTENDANCE] Error saving record:', error);
@@ -243,10 +257,26 @@ async function saveAttendanceRecord(userId, attendanceData) {
   }
 }
 
+async function getAttendanceRecords(userId, limit = 10) {
+  const records = await db.getOrDefault('records:' + userId, []);
+  return records.slice(0, limit);
+}
+
 async function cleanupRecords() {
   try {
     const cutoffDate = moment.tz('Africa/Lagos').subtract(90, 'days').toDate();
-    const deletedCount = await store.deleteOldAttendanceRecords(cutoffDate);
+    const cutoffTime = new Date(cutoffDate).getTime();
+    const allData = await db.getAll();
+    let deletedCount = 0;
+
+    for (const [key, value] of Object.entries(allData)) {
+      if (!key.startsWith('records:')) continue;
+      const userId = key.slice('records:'.length);
+      const filtered = (value || []).filter(r => new Date(r.timestamp).getTime() >= cutoffTime);
+      deletedCount += (value || []).length - filtered.length;
+      await db.set('records:' + userId, filtered);
+    }
+
     console.log(`✅ Attendance records cleanup completed (${deletedCount} records deleted)`);
     return deletedCount;
   } catch (error) {
@@ -295,13 +325,13 @@ function validateAttendanceForm(body, hasImg = false) {
   }
 
   const requiredFields = [
-    { name: "Name", pattern: /\*?Name\*?[:]\s*([^\n]+)/i, fieldName: "👤 Name", extract: true },
-    { name: "Location", pattern: /\*?Location\*?[:]\s*([^\n]+)/i, fieldName: "🌍 Location", extract: true },
-    { name: "Time", pattern: /\*?Time\*?[:]\s*([^\n]+)/i, fieldName: "⌚ Time", extract: true },
-    { name: "Weather", pattern: /\*?Weather\*?[:]\s*([^\n]+)/i, fieldName: "🌥 Weather", extract: true },
-    { name: "Mood", pattern: /\*?Mood\*?[:]\s*([^\n]+)/i, fieldName: "❤️‍🔥 Mood", extract: true },
-    { name: "DOB", pattern: /\*?D\.?O\.?B\.?\*?[:]\s*([^\n]+)/i, fieldName: "🗓 D.O.B", extract: true, isBirthday: true },
-    { name: "Relationship", pattern: /\*?Relationship\*?[:]\s*([^\n]+)/i, fieldName: "👩‍❤️‍👨 Relationship", extract: true }
+    { name: "Name",         pattern: /\*?Name\*?[:]\s*([^\n]+)/i,         fieldName: "👤 Name",                extract: true },
+    { name: "Location",     pattern: /\*?Location\*?[:]\s*([^\n]+)/i,     fieldName: "🌍 Location",             extract: true },
+    { name: "Time",         pattern: /\*?Time\*?[:]\s*([^\n]+)/i,         fieldName: "⌚ Time",                 extract: true },
+    { name: "Weather",      pattern: /\*?Weather\*?[:]\s*([^\n]+)/i,      fieldName: "🌥 Weather",              extract: true },
+    { name: "Mood",         pattern: /\*?Mood\*?[:]\s*([^\n]+)/i,         fieldName: "❤️‍🔥 Mood",              extract: true },
+    { name: "DOB",          pattern: /\*?D\.?O\.?B\.?\*?[:]\s*([^\n]+)/i, fieldName: "🗓 D.O.B",               extract: true, isBirthday: true },
+    { name: "Relationship", pattern: /\*?Relationship\*?[:]\s*([^\n]+)/i, fieldName: "👩‍❤️‍👨 Relationship",   extract: true }
   ];
 
   requiredFields.forEach(field => {
@@ -319,13 +349,10 @@ function validateAttendanceForm(body, hasImg = false) {
     }
   });
 
-  const wakeUpPattern1 = /1[:]\s*([^\n]+)/i;
-  const wakeUpPattern2 = /2[:]\s*([^\n]+)/i;
-  const wakeUpPattern3 = /3[:]\s*([^\n]+)/i;
-  const wakeUp1 = body.match(wakeUpPattern1);
-  const wakeUp2 = body.match(wakeUpPattern2);
-  const wakeUp3 = body.match(wakeUpPattern3);
-  let missingWakeUps = [];
+  const wakeUp1 = body.match(/1[:]\s*([^\n]+)/i);
+  const wakeUp2 = body.match(/2[:]\s*([^\n]+)/i);
+  const wakeUp3 = body.match(/3[:]\s*([^\n]+)/i);
+  const missingWakeUps = [];
   if (!wakeUp1 || !wakeUp1[1] || wakeUp1[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push("1:");
   if (!wakeUp2 || !wakeUp2[1] || wakeUp2[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push("2:");
   if (!wakeUp3 || !wakeUp3[1] || wakeUp3[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push("3:");
@@ -367,31 +394,23 @@ function getCurrentDate() {
 // ===== AUTHORIZATION =====
 async function isAuthorized(sock, chatId, senderId) {
   const bareNumber = senderId.split('@')[0];
-
-  // Check custom admin numbers
   if (attendanceSettings.adminNumbers.includes(bareNumber)) return true;
-
-  // Check owner/sudo
   if (await isOwnerOrSudo(senderId, sock, chatId)) return true;
-
-  // Check group admin
   if (chatId.endsWith('@g.us')) {
     return await isAdmin(sock, chatId, senderId);
   }
-
   return false;
 }
 
 // ===== AUTO ATTENDANCE HANDLER =====
 async function handleAutoAttendance(message, sock) {
   try {
-    // Extract the message text properly to preserve newlines
     const messageText = message.message?.conversation ||
-                       message.message?.extendedTextMessage?.text ||
-                       message.message?.imageMessage?.caption ||
-                       message.message?.videoMessage?.caption ||
-                       message.body ||
-                       '';
+                        message.message?.extendedTextMessage?.text ||
+                        message.message?.imageMessage?.caption ||
+                        message.message?.videoMessage?.caption ||
+                        message.body ||
+                        '';
     const senderId = message.key.participant || message.key.remoteJid;
     const chatId = message.key.remoteJid;
 
@@ -402,8 +421,8 @@ async function handleAutoAttendance(message, sock) {
     const userData = await getUserData(senderId);
 
     if (userData.lastAttendance === today) {
-      await sock.sendMessage(chatId, { 
-        text: `📝 You've already marked your attendance today! Come back tomorrow.` 
+      await sock.sendMessage(chatId, {
+        text: `📝 You've already marked your attendance today! Come back tomorrow.`
       }, { quoted: message });
       return true;
     }
@@ -412,7 +431,9 @@ async function handleAutoAttendance(message, sock) {
     const validation = validateAttendanceForm(messageText, messageHasImage);
 
     if (!validation.isValidForm) {
-      let errorMessage = `❌ *INCOMPLETE ATTENDANCE FORM* \n\n📄 Please complete the following fields:\n\n${validation.missingFields.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\n💡 *Please fill out all required fields and try again.*`;
+      const errorMessage = `❌ *INCOMPLETE ATTENDANCE FORM* \n\n📄 Please complete the following fields:\n\n` +
+        `${validation.missingFields.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\n` +
+        `💡 *Please fill out all required fields and try again.*`;
       await sock.sendMessage(chatId, { text: errorMessage }, { quoted: message });
       return true;
     }
@@ -425,39 +446,39 @@ async function handleAutoAttendance(message, sock) {
       longestStreak: userData.longestStreak
     });
 
+    // Delegate birthday saving to the birthday plugin via the event bus.
+    // birthday.js must listen for 'attendance:birthday' and handle its own storage.
     let birthdayMessage = '';
-    if (validation.extractedData.dob && validation.extractedData.name) {
-      const saved = await saveBirthdayData(senderId, validation.extractedData.name, validation.extractedData.dob);
-      if (saved) {
-        birthdayMessage = `\n🎂 Birthday saved: ${validation.extractedData.dob}`;
-      }
+    if (validation.extractedData.parsedBirthday && validation.extractedData.name) {
+      bus.emit('attendance:birthday', {
+        userId: senderId,
+        name: validation.extractedData.name,
+        birthdayData: validation.extractedData.parsedBirthday
+      });
+      birthdayMessage = `\n🎂 Birthday saved/updated: ${validation.extractedData.parsedBirthday.displayDate}.`;
     }
 
-    // Economy is disabled - save reward as 0
-    const finalReward = 0;
+    // Economy is disabled — reward saved as 0
     await saveAttendanceRecord(senderId, {
       date: today,
       extractedData: validation.extractedData,
       hasImage: messageHasImage,
-      reward: finalReward,
+      reward: 0,
       streak: currentStreak
     });
 
     // Notify activity tracker if available
     if (activityTracker && activityTracker.trackActivity) {
       try {
-        // Create a modified message for attendance tracking
-        const attendanceMessage = {
-          ...message,
-          _attendanceEvent: true
-        };
-        await activityTracker.trackActivity(attendanceMessage);
+        await activityTracker.trackActivity({ ...message, _attendanceEvent: true });
       } catch (err) {
         console.error('[ATTENDANCE] Error notifying activity tracker:', err);
       }
     }
 
-    let successMessage = `✅ *ATTENDANCE APPROVED!* ✅\n\n🔥 Current streak: ${currentStreak} days${birthdayMessage ? `\n${birthdayMessage}` : ''}\n\n🎉 *Thank you for your participation!*`;
+    const successMessage = `✅ *ATTENDANCE APPROVED!* ✅\n\n🔥 Current streak: ${currentStreak} days` +
+      (birthdayMessage ? `\n${birthdayMessage}` : '') +
+      `\n\n🎉 *Thank you for your participation!*`;
     await sock.sendMessage(chatId, { text: successMessage }, { quoted: message });
 
     return true;
@@ -492,23 +513,23 @@ async function handleStats(sock, chatId, senderId, message) {
     const today = getCurrentDate();
 
     let statsMessage = `📊 *YOUR ATTENDANCE STATS* 📊\n\n` +
-                      `📅 Last attendance: ${userData.lastAttendance || 'Never'}\n` +
-                      `📋 Total attendances: ${userData.totalAttendances || 0}\n` +
-                      `🔥 Current streak: ${userData.streak || 0} days\n` +
-                      `🏆 Longest streak: ${userData.longestStreak || 0} days\n` +
-                      `✅ Today's status: ${userData.lastAttendance === today ? 'Marked ✅' : 'Not marked ❌'}\n` +
-                      `📸 Image required: ${attendanceSettings.requireImage ? 'Yes' : 'No'}\n` +
-                      `📅 Date format: ${attendanceSettings.preferredDateFormat}`;
+                       `📅 Last attendance: ${userData.lastAttendance || 'Never'}\n` +
+                       `📋 Total attendances: ${userData.totalAttendances || 0}\n` +
+                       `🔥 Current streak: ${userData.streak || 0} days\n` +
+                       `🏆 Longest streak: ${userData.longestStreak || 0} days\n` +
+                       `✅ Today's status: ${userData.lastAttendance === today ? 'Marked ✅' : 'Not marked ❌'}\n` +
+                       `📸 Image required: ${attendanceSettings.requireImage ? 'Yes' : 'No'}\n` +
+                       `📅 Date format: ${attendanceSettings.preferredDateFormat}`;
 
     const streak = userData.streak || 0;
     statsMessage += streak >= 7 ? `\n🌟 *Amazing! You're on fire with a ${streak}-day streak!*` :
                     streak >= 3 ? `\n🔥 *Great job! Keep the streak going!*` :
-                    `\n💪 *Mark your attendance daily to build a streak!*`;
+                                  `\n💪 *Mark your attendance daily to build a streak!*`;
 
     await sock.sendMessage(chatId, { text: statsMessage }, { quoted: message });
   } catch (error) {
-    await sock.sendMessage(chatId, { 
-      text: '❌ *Error loading stats. Please try again.*' 
+    await sock.sendMessage(chatId, {
+      text: '❌ *Error loading stats. Please try again.*'
     }, { quoted: message });
     console.error('[ATTENDANCE] Stats error:', error);
   }
@@ -516,20 +537,20 @@ async function handleStats(sock, chatId, senderId, message) {
 
 async function handleSettings(sock, chatId, senderId, message, args) {
   if (!(await isAuthorized(sock, chatId, senderId))) {
-    await sock.sendMessage(chatId, { 
-      text: '🚫 Only admins can use this command.' 
+    await sock.sendMessage(chatId, {
+      text: '🚫 Only admins can use this command.'
     }, { quoted: message });
     return;
   }
 
   if (args.length === 0) {
-    let settingsMessage = `⚙️ *ATTENDANCE SETTINGS* ⚙️\n\n` +
-                         `💰 Reward Amount: ₦${attendanceSettings.rewardAmount.toLocaleString()}\n` +
-                         `📸 Require Image: ${attendanceSettings.requireImage ? 'Yes ✅' : 'No ❌'}\n` +
-                         `💎 Image Bonus: ₦${attendanceSettings.imageRewardBonus.toLocaleString()}\n` +
-                         `📅 Date Format: ${attendanceSettings.preferredDateFormat}\n` +
-                         `🔧 *Change Settings:*\n` +
-                         `• *reward [amount]*\n• *requireimage on/off*\n• *imagebonus [amount]*\n• *dateformat MM/DD|DD/MM*`;
+    const settingsMessage = `⚙️ *ATTENDANCE SETTINGS* ⚙️\n\n` +
+                            `💰 Reward Amount: ₦${attendanceSettings.rewardAmount.toLocaleString()}\n` +
+                            `📸 Require Image: ${attendanceSettings.requireImage ? 'Yes ✅' : 'No ❌'}\n` +
+                            `💎 Image Bonus: ₦${attendanceSettings.imageRewardBonus.toLocaleString()}\n` +
+                            `📅 Date Format: ${attendanceSettings.preferredDateFormat}\n` +
+                            `🔧 *Change Settings:*\n` +
+                            `• *reward [amount]*\n• *requireimage on/off*\n• *imagebonus [amount]*\n• *dateformat MM/DD|DD/MM*`;
     await sock.sendMessage(chatId, { text: settingsMessage }, { quoted: message });
     return;
   }
@@ -538,85 +559,64 @@ async function handleSettings(sock, chatId, senderId, message, args) {
   const value = args.slice(1).join(' ');
 
   switch (setting) {
-    case 'reward':
+    case 'reward': {
       const amount = parseInt(value);
       if (isNaN(amount) || amount < 0) {
-        await sock.sendMessage(chatId, { 
-          text: '⚠️ Please specify a valid reward amount.' 
-        }, { quoted: message });
+        await sock.sendMessage(chatId, { text: '⚠️ Please specify a valid reward amount.' }, { quoted: message });
         return;
       }
       attendanceSettings.rewardAmount = amount;
       await saveSettings();
-      await sock.sendMessage(chatId, { 
-        text: `✅ Reward amount set to ₦${amount.toLocaleString()}` 
-      }, { quoted: message });
+      await sock.sendMessage(chatId, { text: `✅ Reward amount set to ₦${amount.toLocaleString()}` }, { quoted: message });
       break;
-
-    case 'requireimage':
+    }
+    case 'requireimage': {
       if (!['on', 'off'].includes(value.toLowerCase())) {
-        await sock.sendMessage(chatId, { 
-          text: '⚠️ Please specify: *on* or *off*' 
-        }, { quoted: message });
+        await sock.sendMessage(chatId, { text: '⚠️ Please specify: *on* or *off*' }, { quoted: message });
         return;
       }
       attendanceSettings.requireImage = value.toLowerCase() === 'on';
       await saveSettings();
-      await sock.sendMessage(chatId, { 
-        text: `✅ Image requirement ${attendanceSettings.requireImage ? 'enabled' : 'disabled'}` 
-      }, { quoted: message });
+      await sock.sendMessage(chatId, { text: `✅ Image requirement ${attendanceSettings.requireImage ? 'enabled' : 'disabled'}` }, { quoted: message });
       break;
-
-    case 'imagebonus':
+    }
+    case 'imagebonus': {
       const bonus = parseInt(value);
       if (isNaN(bonus) || bonus < 0) {
-        await sock.sendMessage(chatId, { 
-          text: '⚠️ Please specify a valid bonus amount.' 
-        }, { quoted: message });
+        await sock.sendMessage(chatId, { text: '⚠️ Please specify a valid bonus amount.' }, { quoted: message });
         return;
       }
       attendanceSettings.imageRewardBonus = bonus;
       await saveSettings();
-      await sock.sendMessage(chatId, { 
-        text: `✅ Image bonus set to ₦${bonus.toLocaleString()}` 
-        }, { quoted: message });
+      await sock.sendMessage(chatId, { text: `✅ Image bonus set to ₦${bonus.toLocaleString()}` }, { quoted: message });
       break;
-
-    case 'dateformat':
+    }
+    case 'dateformat': {
       if (!['MM/DD', 'DD/MM'].includes(value)) {
-        await sock.sendMessage(chatId, { 
-          text: '⚠️ Please specify: *MM/DD* or *DD/MM*' 
-        }, { quoted: message });
+        await sock.sendMessage(chatId, { text: '⚠️ Please specify: *MM/DD* or *DD/MM*' }, { quoted: message });
         return;
       }
       attendanceSettings.preferredDateFormat = value;
       await saveSettings();
-      await sock.sendMessage(chatId, { 
-        text: `✅ Date format set to ${value}` 
-      }, { quoted: message });
+      await sock.sendMessage(chatId, { text: `✅ Date format set to ${value}` }, { quoted: message });
       break;
-
+    }
     default:
-      await sock.sendMessage(chatId, { 
-        text: `❓ Unknown setting: *${setting}*` 
-      }, { quoted: message });
+      await sock.sendMessage(chatId, { text: `❓ Unknown setting: *${setting}*` }, { quoted: message });
   }
 }
 
 async function handleTest(sock, chatId, message, args) {
-  // Extract the original text from the message to preserve newlines
   const fullText = message.message?.conversation ||
                    message.message?.extendedTextMessage?.text ||
                    message.message?.imageMessage?.caption ||
                    message.message?.videoMessage?.caption ||
                    '';
-
-  // Remove the command prefix (.attendance test)
   const testText = fullText.replace(/^[.!#]attendance\s+test\s*/i, '').trim();
 
   if (!testText) {
-    await sock.sendMessage(chatId, { 
-      text: `🔍 *Attendance Form Test*\n\nUsage: .attendance test [paste your attendance form]` 
+    await sock.sendMessage(chatId, {
+      text: `🔍 *Attendance Form Test*\n\nUsage: .attendance test [paste your attendance form]`
     }, { quoted: message });
     return;
   }
@@ -628,7 +628,6 @@ async function handleTest(sock, chatId, message, args) {
                `🔔 Wake-up Members: ${validation.hasWakeUpMembers ? '✅ Present' : '❌ Missing'}\n` +
                `🚫 Missing/Invalid Fields: ${validation.missingFields.length > 0 ? validation.missingFields.join(', ') : 'None'}\n`;
 
-  // Add extracted data if any
   if (Object.keys(validation.extractedData).length > 0) {
     result += `\n📝 Extracted Data:\n`;
     for (const [k, v] of Object.entries(validation.extractedData)) {
@@ -646,11 +645,11 @@ async function handleTest(sock, chatId, message, args) {
 async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
   try {
     const limit = args[0] ? Math.min(Math.max(parseInt(args[0]), 1), 50) : 10;
-    const records = await store.getAttendanceRecords(senderId, limit);
+    const records = await getAttendanceRecords(senderId, limit);
 
     if (records.length === 0) {
-      await sock.sendMessage(chatId, { 
-        text: `📋 *No Attendance Records*\n\nYou haven't marked any attendance yet. Submit your GIST HQ attendance form to get started!` 
+      await sock.sendMessage(chatId, {
+        text: `📋 *No Attendance Records*\n\nYou haven't marked any attendance yet. Submit your GIST HQ attendance form to get started!`
       }, { quoted: message });
       return;
     }
@@ -668,8 +667,8 @@ async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
 
     await sock.sendMessage(chatId, { text: recordsText }, { quoted: message });
   } catch (error) {
-    await sock.sendMessage(chatId, { 
-      text: '❌ *Error loading attendance records. Please try again.*' 
+    await sock.sendMessage(chatId, {
+      text: '❌ *Error loading attendance records. Please try again.*'
     }, { quoted: message });
     console.error('[ATTENDANCE] Records error:', error);
   }
@@ -677,99 +676,98 @@ async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
 
 async function handleCleanup(sock, chatId, senderId, message) {
   if (!(await isAuthorized(sock, chatId, senderId))) {
-    await sock.sendMessage(chatId, { 
-      text: '🚫 Only admins can use this command.' 
+    await sock.sendMessage(chatId, {
+      text: '🚫 Only admins can use this command.'
     }, { quoted: message });
     return;
   }
 
   try {
-    await sock.sendMessage(chatId, { 
-      text: '🧹 Starting cleanup of old attendance records (90+ days)...' 
+    await sock.sendMessage(chatId, {
+      text: '🧹 Starting cleanup of old attendance records (90+ days)...'
     }, { quoted: message });
 
     const deletedCount = await cleanupRecords();
 
-    await sock.sendMessage(chatId, { 
-      text: `✅ Cleanup completed! Deleted ${deletedCount} old records.` 
+    await sock.sendMessage(chatId, {
+      text: `✅ Cleanup completed! Deleted ${deletedCount} old records.`
     }, { quoted: message });
   } catch (error) {
-    await sock.sendMessage(chatId, { 
-      text: '❌ *Error during cleanup. Please try again.*' 
+    await sock.sendMessage(chatId, {
+      text: '❌ *Error during cleanup. Please try again.*'
     }, { quoted: message });
     console.error('[ATTENDANCE] Cleanup error:', error);
   }
 }
 
-  // ===== MAIN PLUGIN HANDLER =====
-  module.exports = {
-    command: 'attendance',
-    aliases: ['att', 'attendstats', 'mystats'],
-    category: 'utility',
-    description: 'Advanced attendance system with form validation and streaks',
-    usage: '.attendance [stats|settings|test|records|help]',
+// ===== PLUGIN EXPORT =====
+module.exports = {
+  command: 'attendance',
+  aliases: ['att', 'attendstats', 'mystats'],
+  category: 'utility',
+  description: 'Advanced attendance system with form validation and streaks',
+  usage: '.attendance [stats|settings|test|records|help]',
 
-    async handler(sock, message, args, context) {
-      const { chatId, senderId } = context;
-      const channelInfo = context.channelInfo || {};
+  // Called once by pluginLoader after the bot connects.
+  // Replaces the old manual loadSettings() call on first handler run.
+  async onLoad(sock) {
+    await loadSettings();
+    console.log('[ATTENDANCE] Plugin loaded, settings ready.');
+  },
 
-      console.log('[ATTENDANCE] Handler called!', { args, chatId, senderId });
+  // Called by pluginLoader on every incoming message.
+  // Replaces the old handleAutoAttendance() import in messageHandler.js.
+  async onMessage(sock, message, context) {
+    if (!attendanceSettings.autoDetection) return;
+    await handleAutoAttendance(message, sock);
+  },
 
-      // Load settings on first run
-      if (!attendanceSettings.loaded) {
-        await loadSettings();
-        attendanceSettings.loaded = true;
-      }
+  async handler(sock, message, args, context) {
+    const { chatId, senderId } = context;
+    const channelInfo = context.channelInfo || {};
 
-      // Route to appropriate command handler
-      const subCommand = args[0]?.toLowerCase();
+    console.log('[ATTENDANCE] Handler called!', { args, chatId, senderId });
 
-      if (!subCommand) {
-        await showAttendanceMenu(sock, chatId, message);
-        return;
-      }
+    const subCommand = args[0]?.toLowerCase();
 
-      switch (subCommand) {
-        case 'stats':
-          await handleStats(sock, chatId, senderId, message);
-          break;
-
-        case 'settings':
-          await handleSettings(sock, chatId, senderId, message, args.slice(1));
-          break;
-
-        case 'test':
-          await handleTest(sock, chatId, message, args.slice(1));
-          break;
-
-        case 'testbirthday':
-          await handleTestBirthday(sock, chatId, message, args.slice(1));
-          break;
-
-        case 'records':
-          await handleAttendanceRecords(sock, chatId, senderId, message, args.slice(1));
-          break;
-
-        case 'cleanup':
-          await handleCleanup(sock, chatId, senderId, message);
-          break;
-
-        case 'help':
-          await showAttendanceMenu(sock, chatId, message);
-          break;
-
-        default:
-          await sock.sendMessage(chatId, { 
-            text: `❓ Unknown attendance command: *${subCommand}*\n\nUse *.attendance help* to see available commands.`,
-            ...channelInfo
-          }, { quoted: message });
-      }
+    if (!subCommand) {
+      await showAttendanceMenu(sock, chatId, message);
+      return;
     }
-  };
 
-// Export utility functions (same pattern as ban.js)
+    switch (subCommand) {
+      case 'stats':
+        await handleStats(sock, chatId, senderId, message);
+        break;
+      case 'settings':
+        await handleSettings(sock, chatId, senderId, message, args.slice(1));
+        break;
+      case 'test':
+        await handleTest(sock, chatId, message, args.slice(1));
+        break;
+      case 'testbirthday':
+        await handleTestBirthday(sock, chatId, message, args.slice(1));
+        break;
+      case 'records':
+        await handleAttendanceRecords(sock, chatId, senderId, message, args.slice(1));
+        break;
+      case 'cleanup':
+        await handleCleanup(sock, chatId, senderId, message);
+        break;
+      case 'help':
+        await showAttendanceMenu(sock, chatId, message);
+        break;
+      default:
+        await sock.sendMessage(chatId, {
+          text: `❓ Unknown attendance command: *${subCommand}*\n\nUse *.attendance help* to see available commands.`,
+          ...channelInfo
+        }, { quoted: message });
+    }
+  }
+};
+
+// Named exports preserved for any plugins that import these utilities directly
 module.exports.parseBirthday = parseBirthday;
-module.exports.saveBirthdayData = saveBirthdayData;
 module.exports.validateAttendanceForm = validateAttendanceForm;
 module.exports.hasImage = hasImage;
 module.exports.getCurrentDate = getCurrentDate;
