@@ -51,6 +51,7 @@ const {
 
 const settings = require('./settings');
 const commandHandler = require('./lib/commandHandler');
+const { startScheduler } = require('./plugins/birthday');
 
 store.readFromFile();
 setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);

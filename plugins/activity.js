@@ -772,7 +772,7 @@ module.exports = {
             default:
                 await sock.sendMessage(chatId, { 
                     text: `❓ Unknown activity command: *${subCommand}*\n\nUse *${settings.prefixes[0]}activity help* to see available commands.`,
-                    ...context.channelInfo 
+                    //...context.channelInfo 
                 }, { quoted: message });
         }
     }

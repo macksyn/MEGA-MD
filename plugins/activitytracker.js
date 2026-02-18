@@ -277,6 +277,12 @@ async function trackActivity(message) {
     const messageType = detectMessageType(message.message);
     if (!messageType) return;
 
+    // Detect attendance event
+    if (message._attendanceEvent) {
+      activityType = 'attendance';
+      points = ACTIVITY_POINTS.attendance || 10;
+    }
+
     // Get current settings
     const settings = await getSettings();
 
