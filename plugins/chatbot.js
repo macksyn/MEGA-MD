@@ -1,451 +1,645 @@
-const fs = require('fs');
-const path = require('path');
+'use strict';
+
+/**
+ * plugins/chatbot.js
+ *
+ * AI Chatbot plugin for Gist HQ WhatsApp bot.
+ *
+ * Storage layout (via pluginStore):
+ *   chatbot/settings  → key = chatId,   value = { enabled: true }
+ *   chatbot/profiles  → key = senderId, value = { name, age, location, occupation, interests[], moodHistory[], lastSeen }
+ *   chatbot/history   → key = senderId, value = [ ...last 20 messages ]
+ *
+ * Lifecycle hooks (pluginLoader):
+ *   onLoad    → restore enabled groups from DB, warm known user caches
+ *   onMessage → intercept group messages, handle chatbot responses
+ *   schedules → persist in-memory data to DB every 10 minutes
+ */
+
 const fetch = require('node-fetch');
-const store = require('../lib/lightweight_store');
+const { createStore } = require('../lib/pluginStore');
 
-const MONGO_URL = process.env.MONGO_URL;
-const POSTGRES_URL = process.env.POSTGRES_URL;
-const MYSQL_URL = process.env.MYSQL_URL;
-const SQLITE_URL = process.env.DB_URL;
-const HAS_DB = !!(MONGO_URL || POSTGRES_URL || MYSQL_URL || SQLITE_URL);
+// ── Storage ───────────────────────────────────────────────────────────────────
+const db         = createStore('chatbot');
+const dbSettings = db.table('settings');  // chatId → { enabled: true }
+const dbProfiles = db.table('profiles');  // senderId → profile object
+const dbHistory  = db.table('history');   // senderId → message string[]
 
-const USER_GROUP_DATA = path.join(__dirname, '../data/userGroupData.json');
+// ── In-memory maps (fast session cache, backed by DB) ─────────────────────────
+const MAX_MEMORY_USERS  = 200;
+const MAX_HISTORY       = 20;
+const COOLDOWN_MS       = 3000;
+const PERSIST_EVERY_MS  = 10 * 60 * 1000; // flush to DB every 10 minutes
 
-// ─── In-memory chat context ────────────────────────────────────────────────
-const MAX_MEMORY_USERS = 200; // evict oldest user when exceeded
-const MAX_HISTORY_PER_USER = 20;
-
-const chatMemory = {
-    messages: new Map(),
-    userInfo: new Map()
+const memory = {
+    history:  new Map(),  // senderId → string[]
+    profiles: new Map(),  // senderId → profile object
 };
 
-// ─── DB cache (avoids reading file/DB on every message) ────────────────────
-let cachedChatbotData = null;
+/** Groups where chatbot is enabled — loaded from DB on startup */
+const enabledGroups = new Set();
 
-// ─── API Endpoints (fallback chain) ───────────────────────────────────────
+/** Per-user reply cooldowns */
+const cooldowns = new Map();
+
+// ── AI API endpoints ──────────────────────────────────────────────────────────
 const API_ENDPOINTS = [
     {
-        name: 'Venice AI',
-        url: (text) => `https://malvin-api.vercel.app/ai/venice?text=${encodeURIComponent(text)}`,
-        parse: (data) => data?.result
+        name:  'Venice AI',
+        url:   (t) => `https://malvin-api.vercel.app/ai/venice?text=${encodeURIComponent(t)}`,
+        parse: (d) => d?.result
     },
     {
-        name: 'GPT-5',
-        url: (text) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(text)}`,
-        parse: (data) => data?.reply
+        name:  'GPT-5',
+        url:   (t) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(t)}`,
+        parse: (d) => d?.reply
     },
     {
-        name: 'SparkAPI',
-        url: (text) => `https://discardapi.dpdns.org/api/chat/spark?apikey=guru&text=${encodeURIComponent(text)}`,
-        parse: (data) => data?.result?.answer
+        name:  'SparkAPI',
+        url:   (t) => `https://discardapi.dpdns.org/api/chat/spark?apikey=guru&text=${encodeURIComponent(t)}`,
+        parse: (d) => d?.result?.answer
     },
     {
-        name: 'LlamaAPI',
-        url: (text) => `https://discardapi.dpdns.org/api/bot/llama?apikey=guru&text=${encodeURIComponent(text)}`,
-        parse: (data) => data?.result
+        name:  'LlamaAPI',
+        url:   (t) => `https://discardapi.dpdns.org/api/bot/llama?apikey=guru&text=${encodeURIComponent(t)}`,
+        parse: (d) => d?.result
     }
 ];
 
-// ─── API failure tracking ──────────────────────────────────────────────────
-const apiFailureCounts = {};
-API_ENDPOINTS.forEach(api => apiFailureCounts[api.name] = 0);
+const apiFailures = {};
+API_ENDPOINTS.forEach(api => apiFailures[api.name] = 0);
 
-// ─── Data persistence ──────────────────────────────────────────────────────
-async function loadUserGroupData() {
-    if (cachedChatbotData) return cachedChatbotData;
-
-    try {
-        let data;
-        if (HAS_DB) {
-            data = await store.getSetting('global', 'userGroupData');
-            data = data || { groups: [], chatbot: {} };
-        } else {
-            data = JSON.parse(fs.readFileSync(USER_GROUP_DATA));
-        }
-        cachedChatbotData = data;
-        return data;
-    } catch (error) {
-        console.error('Error loading user group data:', error.message);
-        cachedChatbotData = { groups: [], chatbot: {} };
-        return cachedChatbotData;
-    }
-}
-
-async function saveUserGroupData(data) {
-    cachedChatbotData = data; // always update cache first
-
-    try {
-        if (HAS_DB) {
-            await store.saveSetting('global', 'userGroupData', data);
-        } else {
-            const dataDir = path.dirname(USER_GROUP_DATA);
-            if (!fs.existsSync(dataDir)) {
-                fs.mkdirSync(dataDir, { recursive: true });
-            }
-            fs.writeFileSync(USER_GROUP_DATA, JSON.stringify(data, null, 2));
-        }
-    } catch (error) {
-        console.error('Error saving user group data:', error.message);
-    }
-}
-
-// ─── Typing indicator ──────────────────────────────────────────────────────
-function getRandomDelay(min = 2000, max = 4000) {
+// ── Typing indicator ──────────────────────────────────────────────────────────
+function randomDelay(min = 1500, max = 3500) {
     return Math.floor(Math.random() * (max - min)) + min;
 }
 
-async function showTyping(sock, chatId) {
+async function showTyping(sock, chatId, responseLength = 80) {
     try {
+        // Delay scales with response length — short replies type faster
+        const delay = Math.min(randomDelay() + responseLength * 12, 5000);
         await sock.presenceSubscribe(chatId);
         await sock.sendPresenceUpdate('composing', chatId);
-        await new Promise(resolve => setTimeout(resolve, getRandomDelay()));
-    } catch (error) {
-        console.error('Typing indicator error:', error.message);
+        await new Promise(r => setTimeout(r, delay));
+    } catch (err) {
+        console.error('[Chatbot] Typing error:', err.message);
     }
 }
 
-// ─── User info extraction ──────────────────────────────────────────────────
-function extractUserInfo(message) {
-    const info = {};
-    const lower = message.toLowerCase();
+// ── Profile extraction ────────────────────────────────────────────────────────
 
-    const nameMatch = lower.match(/my name is ([a-zA-Z]+)/i);
+/**
+ * Extract facts the user explicitly stated about themselves.
+ */
+function extractExplicitInfo(message) {
+    const info = {};
+
+    const nameMatch = message.match(/my name is ([a-zA-Z]+)/i);
     if (nameMatch) info.name = nameMatch[1];
 
-    // Only extract age if it's clearly stated, not just any number
-    const ageMatch = lower.match(/i(?:'m| am) (\d{1,2}) years old/i);
-    if (ageMatch) info.age = ageMatch[1];
+    const ageMatch = message.match(/i(?:'m| am) (\d{1,2}) years old/i);
+    if (ageMatch) info.age = parseInt(ageMatch[1]);
 
-    const locationMatch = lower.match(/(?:i live in|i am from|i'm from) ([a-zA-Z\s]+?)(?:[.,!?]|$)/i);
-    if (locationMatch) info.location = locationMatch[1].trim();
+    const locMatch = message.match(/(?:i live in|i(?:'m| am) from) ([a-zA-Z\s]{2,30})(?:[.,!?]|$)/i);
+    if (locMatch) info.location = locMatch[1].trim();
+
+    const jobKeywords = ['student','developer','doctor','teacher','engineer',
+                         'lawyer','trader','designer','nurse','chef','journalist'];
+    const jobMatch = message.match(/i(?:'m| am) a(?:n)? ([a-zA-Z\s]{2,30})(?:[.,!?]|$)/i);
+    if (jobMatch) {
+        const job = jobMatch[1].trim().toLowerCase();
+        if (jobKeywords.some(k => job.includes(k))) info.occupation = jobMatch[1].trim();
+    }
 
     return info;
 }
 
-// ─── Memory management ─────────────────────────────────────────────────────
+/**
+ * Passively detect interests, mood, and topic from message content.
+ * Accumulates silently over time — user never needs to state these explicitly.
+ */
+function detectPassiveSignals(message) {
+    const signals = { interests: [], mood: null, topic: null };
+
+    const interestMap = {
+        football:  /\b(football|soccer|messi|ronaldo|arsenal|chelsea|liverpool|man\s?u|premier league|champions league|laliga)\b/i,
+        music:     /\b(music|song|playlist|artist|album|concert|afrobeats|amapiano|highlife|rap|singer)\b/i,
+        tech:      /\b(coding|programming|developer|software|app|website|tech|gadget|phone|laptop|AI)\b/i,
+        movies:    /\b(movie|film|series|netflix|watch|episode|cinema|actor|actress|horror|action)\b/i,
+        food:      /\b(food|hungry|cook|eat|restaurant|jollof|eba|suya|pounded|shawarma|pepper soup)\b/i,
+        gaming:    /\b(game|gaming|play|ps5|xbox|fifa|call of duty|fortnite|gamer)\b/i,
+        fashion:   /\b(fashion|cloth|style|outfit|dress|shoe|bag|wears?)\b/i,
+        politics:  /\b(government|president|election|naira|policy|nigeria|vote|senator|governor)\b/i,
+    };
+
+    for (const [interest, regex] of Object.entries(interestMap)) {
+        if (regex.test(message)) signals.interests.push(interest);
+    }
+
+    const moodMap = {
+        happy:    /\b(happy|excited|great|amazing|loving|so good|blessed|grateful|winning)\b/i,
+        sad:      /\b(sad|depressed|down|crying|miss|lonely|hurting|broken)\b/i,
+        angry:    /\b(angry|mad|frustrated|annoyed|hate|stupid|useless|rubbish|nonsense)\b/i,
+        stressed: /\b(stressed|tired|exhausted|overwhelmed|too much|pressure|deadline)\b/i,
+        bored:    /\b(bored|boring|nothing to do|dull|slow day)\b/i,
+        anxious:  /\b(anxious|nervous|scared|worried|fear|panic)\b/i,
+    };
+
+    for (const [mood, regex] of Object.entries(moodMap)) {
+        if (regex.test(message)) { signals.mood = mood; break; }
+    }
+
+    const topicMap = {
+        relationship: /\b(girlfriend|boyfriend|babe|love|date|breakup|crush|married|wife|husband)\b/i,
+        money:        /\b(money|broke|rich|salary|hustle|cash|transfer|business|investment|debt)\b/i,
+        school:       /\b(school|exam|class|lecture|result|cgpa|assignment|course|degree|jamb|waec)\b/i,
+        health:       /\b(sick|hospital|pain|doctor|medicine|health|headache|fever|malaria)\b/i,
+        sports:       /\b(match|goal|team|player|score|league|tournament)\b/i,
+    };
+
+    for (const [topic, regex] of Object.entries(topicMap)) {
+        if (regex.test(message)) { signals.topic = topic; break; }
+    }
+
+    return signals;
+}
+
+// ── Memory management ─────────────────────────────────────────────────────────
+
+/** Merge new data into existing profile — accumulates rather than overwrites */
+function mergeProfile(existing = {}, fresh = {}) {
+    const merged = { ...existing, ...fresh };
+
+    // Accumulate interests (deduplicated list)
+    if (fresh.interests?.length) {
+        const prev = existing.interests || [];
+        merged.interests = [...new Set([...prev, ...fresh.interests])];
+    }
+
+    // Rolling mood history — last 5 entries with timestamps
+    if (fresh.mood) {
+        const hist = existing.moodHistory || [];
+        hist.push({ mood: fresh.mood, at: Date.now() });
+        if (hist.length > 5) hist.shift();
+        merged.moodHistory = hist;
+        merged.lastMood = fresh.mood;
+    }
+
+    if (fresh.topic) merged.currentTopic = fresh.topic;
+    merged.lastSeen = Date.now();
+    return merged;
+}
+
+/** Warm a user's memory from DB — only on their first message in the session */
+async function warmUserCache(senderId) {
+    if (memory.history.has(senderId)) return;
+
+    const [hist, profile] = await Promise.all([
+        dbHistory.getOrDefault(senderId, []),
+        dbProfiles.getOrDefault(senderId, {})
+    ]);
+
+    memory.history.set(senderId, hist);
+    memory.profiles.set(senderId, profile);
+}
+
+/** Update history and profile maps, enforce limits, evict oldest if needed */
 function updateMemory(senderId, message) {
-    if (!chatMemory.messages.has(senderId)) {
-        chatMemory.messages.set(senderId, []);
-        chatMemory.userInfo.set(senderId, {});
-    }
+    // History
+    const hist = memory.history.get(senderId) || [];
+    hist.push(message);
+    if (hist.length > MAX_HISTORY) hist.shift();
+    memory.history.set(senderId, hist);
 
-    // Extract and merge user info
-    const extracted = extractUserInfo(message);
-    if (Object.keys(extracted).length > 0) {
-        chatMemory.userInfo.set(senderId, {
-            ...chatMemory.userInfo.get(senderId),
-            ...extracted
-        });
-    }
+    // Profile
+    const existing  = memory.profiles.get(senderId) || {};
+    const explicit  = extractExplicitInfo(message);
+    const passive   = detectPassiveSignals(message);
+    const updated   = mergeProfile(existing, {
+        ...explicit,
+        interests: passive.interests,
+        mood:      passive.mood,
+        topic:     passive.topic,
+    });
+    memory.profiles.set(senderId, updated);
 
-    // Append message to history
-    const messages = chatMemory.messages.get(senderId);
-    messages.push(message);
-    if (messages.length > MAX_HISTORY_PER_USER) messages.shift();
-    chatMemory.messages.set(senderId, messages);
-
-    // Evict oldest user if map is too large
-    if (chatMemory.messages.size > MAX_MEMORY_USERS) {
-        const oldestKey = chatMemory.messages.keys().next().value;
-        chatMemory.messages.delete(oldestKey);
-        chatMemory.userInfo.delete(oldestKey);
-        console.log(`[Memory] Evicted oldest user context: ${oldestKey}`);
+    // Evict oldest user if maps are full
+    if (memory.history.size > MAX_MEMORY_USERS) {
+        const oldest = memory.history.keys().next().value;
+        memory.history.delete(oldest);
+        memory.profiles.delete(oldest);
+        console.log(`[Chatbot] Evicted oldest user from memory: ${oldest}`);
     }
 }
 
-// ─── AI prompt builder ─────────────────────────────────────────────────────
-function buildPrompt(userMessage, userContext) {
-    const { messages, userInfo } = userContext;
+/** Flush all in-memory data to DB (called on schedule) */
+async function persistMemory() {
+    const histEntries    = [...memory.history.entries()];
+    const profileEntries = [...memory.profiles.entries()];
+
+    await Promise.all([
+        ...histEntries.map(([id, h])    => dbHistory.set(id, h)),
+        ...profileEntries.map(([id, p]) => dbProfiles.set(id, p)),
+    ]);
+
+    console.log(`[Chatbot] Memory persisted — ${histEntries.length} users flushed to DB`);
+}
+
+// ── Prompt builder ────────────────────────────────────────────────────────────
+
+function buildToneInstruction(profile) {
+    const toneMap = {
+        sad:      "They seem sad or down. Be warm and supportive. Skip jokes unless they make one first.",
+        stressed: "They seem stressed. Stay calm and grounding. Don't add pressure.",
+        angry:    "They seem frustrated. Stay steady — don't match their energy aggressively.",
+        anxious:  "They seem worried. Be reassuring and keep things light but genuine.",
+        bored:    "They're bored. Be entertaining — throw in a joke or interesting take.",
+        happy:    "They're in a great mood. Match that energy — be fun and playful.",
+    };
+    return toneMap[profile.lastMood] || 'Be casual and engaging.';
+}
+
+function buildPrompt(userMessage, senderId) {
+    const profile = memory.profiles.get(senderId) || {};
+    const hist    = memory.history.get(senderId)   || [];
+
     const identityLines = [
-        userInfo.name     ? `Their name is ${userInfo.name}.`         : '',
-        userInfo.age      ? `They are ${userInfo.age} years old.`     : '',
-        userInfo.location ? `They are from ${userInfo.location}.`     : ''
-    ].filter(Boolean).join(' ');
+        profile.name         ? `Name: ${profile.name}`                                              : '',
+        profile.age          ? `Age: ${profile.age}`                                                : '',
+        profile.location     ? `Location: ${profile.location}`                                      : '',
+        profile.occupation   ? `Occupation: ${profile.occupation}`                                  : '',
+        profile.interests?.length
+                             ? `Known interests: ${profile.interests.join(', ')}`                   : '',
+        profile.currentTopic ? `Current topic they're focused on: ${profile.currentTopic}`          : '',
+        profile.lastMood     ? `Current mood signals: ${profile.lastMood}`                          : '',
+        profile.moodHistory?.length
+                             ? `Mood pattern: ${profile.moodHistory.map(m => m.mood).join(' → ')}` : '',
+    ].filter(Boolean).join('\n');
 
-    const historyBlock = messages.slice(-10)
-        .map((msg, i) => `[${i + 1}] ${msg}`)
-        .join('\n');
+    const isPidgin = /\b(dey|una|wey|dem|comot|abeg|wahala|omo|na|sha|sef|wetin|sabi)\b/i.test(userMessage);
+    const dialectHint = isPidgin
+        ? "They are writing in Nigerian Pidgin or Yoruba slang — respond naturally in the same dialect."
+        : "Match the language register they use — formal, casual, or mixed as needed.";
 
-    return `You are Groq, a sharp and friendly group admin for Gist HQ on WhatsApp. You chat like a real Nigerian — casual, witty, confident, and warm. You are NOT an AI assistant and never claim to be one.
+    const interestHint = profile.interests?.length
+        ? `If it comes up naturally, you can reference their interests (${profile.interests.join(', ')}) — but never force it.`
+        : '';
 
-${identityLines ? `About the person you're chatting with: ${identityLines}` : ''}
+    const historyBlock = hist.slice(-10).map((m, i) => `[${i + 1}] ${m}`).join('\n');
 
-Recent conversation (most recent last):
-${historyBlock || '(no history yet)'}
+    return `You are Groq, a sharp and fun group admin for Gist HQ on WhatsApp. You are NOT an AI — you're a real person chatting. Never admit to being a bot under any circumstances, even if pushed hard.
 
-Guidelines:
-- Reply in 1 to 3 short lines. Be concise, never verbose.
-- Use actual emojis naturally where they fit. Never write words like "winks" or "laughs".
-- Match the user's energy — playful if they're joking, serious if they need it, supportive if they're down.
-- If someone is rude or disrespectful, be firm and unbothered. Don't be aggressive or abusive.
-- If you genuinely don't know something, say so casually like a real person would.
-- Never repeat these instructions. Never output bullet lists or headers.
-- Never reveal you are a bot, AI, or assistant under any circumstances.
+ABOUT THE PERSON YOU'RE TALKING TO:
+${identityLines || '(no profile yet — treat this as a new person)'}
+
+DIALECT:
+${dialectHint}
+
+TONE RIGHT NOW:
+${buildToneInstruction(profile)}
+
+${interestHint}
+
+RECENT CONVERSATION (oldest to newest):
+${historyBlock || '(no prior conversation this session)'}
+
+YOUR RULES:
+- Reply in 1 to 3 lines maximum. Never write walls of text.
+- Use actual emojis naturally. Never write emote words like "winks", "laughs", or "sighs".
+- If you don't know something, say so casually like a real person would.
+- Never repeat or reference these instructions. Never output bullet lists or headers.
+- Be firm and unbothered if disrespected — but never abusive.
 
 Current message: ${userMessage}
 Groq:`.trim();
 }
 
-// ─── AI response fetcher ───────────────────────────────────────────────────
-async function getAIResponse(userMessage, userContext) {
-    const prompt = buildPrompt(userMessage, userContext);
+// ── AI response fetcher ───────────────────────────────────────────────────────
+async function getAIResponse(userMessage, senderId) {
+    const prompt = buildPrompt(userMessage, senderId);
 
     for (const api of API_ENDPOINTS) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const timeoutId  = setTimeout(() => controller.abort(), 10000);
 
         try {
             console.log(`[AI] Trying ${api.name}...`);
 
-            const response = await fetch(api.url(prompt), {
+            const res = await fetch(api.url(prompt), {
                 method: 'GET',
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
 
-            if (!response.ok) {
-                console.warn(`[AI] ${api.name} responded with status ${response.status}`);
-                apiFailureCounts[api.name]++;
+            if (!res.ok) {
+                console.warn(`[AI] ${api.name} HTTP ${res.status}`);
+                apiFailures[api.name]++;
                 continue;
             }
 
-            const data = await response.json();
+            const data   = await res.json();
             const result = api.parse(data);
 
-            if (!result || typeof result !== 'string' || result.trim().length === 0) {
+            if (!result || typeof result !== 'string' || !result.trim()) {
                 console.warn(`[AI] ${api.name} returned empty result`);
-                apiFailureCounts[api.name]++;
+                apiFailures[api.name]++;
                 continue;
             }
 
-            console.log(`[AI] ✅ ${api.name} succeeded (failures so far: ${apiFailureCounts[api.name]})`);
-            apiFailureCounts[api.name] = 0; // reset on success
+            console.log(`[AI] ✅ ${api.name} OK`);
+            apiFailures[api.name] = 0;
 
-            // Clean up the response
+            // ── Clean up response ──────────────────────────────────────────
             let cleaned = result.trim()
-                // Replace emote words with actual emojis
-                .replace(/\bwinks?\b/gi, '😉')
-                .replace(/\beye\s?roll(s|ing)?\b/gi, '🙄')
-                .replace(/\bshrug(s|ging)?\b/gi, '🤷‍♂️')
-                .replace(/\braises?\s?eyebrows?\b/gi, '🤨')
-                .replace(/\bsmil(es?|ing)\b/gi, '😊')
-                .replace(/\blaugh(s|ing|ed)?\b/gi, '😂')
-                .replace(/\bcri(es|ing|ed)\b/gi, '😢')
-                .replace(/\bthinks?\b/gi, '🤔')
-                .replace(/\bsleep(s|ing)?\b/gi, '😴')
+                // Emote words → actual emojis
+                .replace(/\bwinks?\b/gi,                '😉')
+                .replace(/\beye[\s-]?roll(s|ing)?\b/gi, '🙄')
+                .replace(/\bshrug(s|ging)?\b/gi,        '🤷‍♂️')
+                .replace(/\braises?\s?eyebrows?\b/gi,   '🤨')
+                .replace(/\bsmil(es?|ing)\b/gi,         '😊')
+                .replace(/\blaugh(s|ing|ed)?\b/gi,      '😂')
+                .replace(/\bcri(es|ing|ed)\b/gi,        '😢')
+                .replace(/\bthinks?\b/gi,                '🤔')
+                .replace(/\bsleep(s|ing)?\b/gi,         '😴')
                 // Strip AI self-references
-                .replace(/\b(google|gemini|chatgpt|openai|gpt[\s-]?\d*)\b/gi, 'Groq')
-                .replace(/\ba large language model\b/gi, '')
+                .replace(/\b(google|gemini|chatgpt|openai|gpt[\s-]?\d*|claude|copilot)\b/gi, 'Groq')
+                .replace(/\ba large language model\b/gi,                  '')
                 .replace(/\bi'?m an? (ai|bot|assistant|language model)\b/gi, '')
+                // Strip citation markers: ^1,2,3^  [1,2]  (1)
+                .replace(/\^[\d,\s]+\^/g,        '')
+                .replace(/\[[\d,\s]+\]/g,         '')
+                .replace(/\(\d+(?:,\s*\d+)*\)/g,  '')
                 // Strip leaked instruction fragments
-                .replace(/^(Remember|IMPORTANT|NOTE|CORE RULES|EMOJI USAGE|RESPONSE STYLE|ABOUT YOU):.*$/gim, '')
-                .replace(/^[•\-–]\s.+$/gm, '')
-                .replace(/^✅.+$/gm, '')
-                .replace(/^❌.+$/gm, '')
-                .replace(/^[A-Z][A-Z\s]{4,}:.+$/gm, '') // ALL-CAPS headers
-                // Strip citation markers like ^1,2,3^ or [1] or [1,2,3]
-                .replace(/\^[\d,\s]+\^/g, '')
-                .replace(/\[[\d,\s]+\]/g, '')
-                // Strip leftover prompt echo
-                .replace(/^(Previous conversation|User information|Current message|Groq):.*$/gim, '')
-                // Clean up whitespace
+                .replace(/^(Remember|IMPORTANT|NOTE|ABOUT YOU|TONE|RULES|YOUR RULES|DIALECT|GROQ):.*$/gim, '')
+                .replace(/^[A-Z][A-Z\s]{4,}:.*$/gm,  '')  // ALL-CAPS headers
+                .replace(/^[•\-–]\s.+$/gm,            '')  // bullet lines
+                .replace(/^(Previous conversation|Current message|Groq):.*$/gim, '')
+                // Whitespace cleanup
                 .replace(/\n{2,}/g, '\n')
                 .trim();
 
-            // Hard cap on length
-            if (cleaned.length > 500) {
-                cleaned = cleaned.substring(0, 497).trim() + '...';
-            }
+            // Hard length cap
+            if (cleaned.length > 500) cleaned = cleaned.substring(0, 497).trim() + '...';
 
-            // If cleaning nuked the whole response, try next API
-            if (cleaned.length === 0) {
-                console.warn(`[AI] ${api.name} response was empty after cleaning`);
+            if (!cleaned) {
+                console.warn(`[AI] ${api.name} was empty after cleaning`);
                 continue;
             }
 
             return cleaned;
 
-        } catch (error) {
+        } catch (err) {
             clearTimeout(timeoutId);
-            if (error.name === 'AbortError') {
-                console.warn(`[AI] ${api.name} timed out after 10s`);
+            if (err.name === 'AbortError') {
+                console.warn(`[AI] ${api.name} timed out`);
             } else {
-                console.warn(`[AI] ${api.name} error: ${error.message}`);
+                console.warn(`[AI] ${api.name} error: ${err.message}`);
             }
-            apiFailureCounts[api.name]++;
+            apiFailures[api.name]++;
         }
     }
 
-    // Log overall failure counts for monitoring
-    console.error('[AI] All APIs failed. Failure counts:', apiFailureCounts);
+    console.error('[AI] All APIs failed. Failure counts:', apiFailures);
     return null;
 }
 
-// ─── Main chatbot message handler ─────────────────────────────────────────
-async function handleChatbotResponse(sock, chatId, message, userMessage, senderId) {
-    const data = await loadUserGroupData();
-    if (!data.chatbot[chatId]) return;
-
+// ── Bot mention/reply detection ───────────────────────────────────────────────
+function isBotAddressed(message, sock, userMessage) {
     try {
-        const botId = sock.user.id;
+        const botId     = sock.user.id;
         const botNumber = botId.split(':')[0];
-        const botLid = sock.user.lid;
-        const botJids = [
+        const botLid    = sock.user.lid || '';
+        const normalize = (jid = '') => jid.replace(/[:@].*$/, '');
+
+        const botNums = [
             botId,
             `${botNumber}@s.whatsapp.net`,
-            `${botNumber}@whatsapp.net`,
-            `${botNumber}@lid`,
             botLid,
             `${botLid.split(':')[0]}@lid`
-        ];
-
-        const normalize = (jid = '') => jid.replace(/[:@].*$/, '');
-        const botNumbers = botJids.map(normalize);
-
-        let isBotMentioned = false;
-        let isReplyToBot = false;
+        ].map(normalize).filter(Boolean);
 
         if (message.message?.extendedTextMessage) {
-            const ctx = message.message.extendedTextMessage.contextInfo || {};
-            const mentionedJids = ctx.mentionedJid || [];
-            const quotedParticipant = ctx.participant || '';
-
-            isBotMentioned = mentionedJids.some(jid => botNumbers.includes(normalize(jid)));
-            isReplyToBot = botNumbers.includes(normalize(quotedParticipant));
-
-        } else if (message.message?.conversation) {
-            isBotMentioned = userMessage.includes(`@${botNumber}`);
+            const ctx       = message.message.extendedTextMessage.contextInfo || {};
+            const mentioned = (ctx.mentionedJid || []).map(normalize).some(n => botNums.includes(n));
+            const replied   = botNums.includes(normalize(ctx.participant || ''));
+            return { addressed: mentioned || replied, botNumber };
         }
 
-        if (!isBotMentioned && !isReplyToBot) return;
+        if (message.message?.conversation) {
+            return { addressed: userMessage.includes(`@${botNumber}`), botNumber };
+        }
 
-        // Strip the bot mention from the message text
-        let cleanedMessage = userMessage
-            .replace(new RegExp(`@${botNumber}`, 'g'), '')
-            .trim();
+        return { addressed: false, botNumber };
+    } catch {
+        return { addressed: false, botNumber: '' };
+    }
+}
 
-        if (!cleanedMessage) return; // ignore empty mentions
+// ── Core message handler (called via onMessage lifecycle) ─────────────────────
+async function handleChatbotMessage(sock, message, context) {
+    const chatId   = context?.chatId || message.key.remoteJid;
+    const senderId = message.key.participant || message.key.remoteJid;
 
-        // Update memory
+    if (!enabledGroups.has(chatId)) return;
+
+    const userMessage =
+        message.message?.conversation ||
+        message.message?.extendedTextMessage?.text ||
+        message.message?.imageMessage?.caption ||
+        message.message?.videoMessage?.caption || '';
+
+    if (!userMessage.trim()) return;
+
+    const { addressed, botNumber } = isBotAddressed(message, sock, userMessage);
+    if (!addressed) return;
+
+    // Spam cooldown
+    const lastReply = cooldowns.get(senderId) || 0;
+    if (Date.now() - lastReply < COOLDOWN_MS) return;
+    cooldowns.set(senderId, Date.now());
+
+    // Strip bot mention from message text
+    const cleanedMessage = userMessage
+        .replace(new RegExp(`@${botNumber}`, 'g'), '')
+        .trim();
+
+    if (!cleanedMessage) return;
+
+    // Ignore short throwaway messages that waste API calls
+    if (/^(ok|k|lol|lmao|haha|😂|👍|yes|no|yep|nope|sure|okay|hmm)$/i.test(cleanedMessage)) return;
+
+    try {
+        // Load this user from DB into memory if first message this session
+        await warmUserCache(senderId);
+
+        // Append message to memory and update profile
         updateMemory(senderId, cleanedMessage);
 
-        // Show typing then fetch AI response
+        // Mark as read → feels human
+        await sock.readMessages([message.key]);
+
+        // Show typing indicator before calling AI
         await showTyping(sock, chatId);
 
-        const response = await getAIResponse(cleanedMessage, {
-            messages: chatMemory.messages.get(senderId) || [],
-            userInfo: chatMemory.userInfo.get(senderId) || {}
-        });
+        const response = await getAIResponse(cleanedMessage, senderId);
 
         if (!response) {
             await sock.sendMessage(chatId, {
-                text: "Hmm, my brain glitched for a sec 😅 Try again?",
+                text: "My brain went on a quick vacation 😅 Try again?",
                 quoted: message
             });
             return;
         }
 
+        // Scale typing to actual response length before sending
+        await showTyping(sock, chatId, response.length);
         await sock.sendMessage(chatId, { text: response }, { quoted: message });
 
-    } catch (error) {
-        console.error('[Chatbot] Error in handleChatbotResponse:', error.message);
-
-        if (error.message?.includes('No sessions')) {
-            console.error('[Chatbot] Session error — skipping error reply');
-            return;
-        }
+    } catch (err) {
+        console.error('[Chatbot] Error:', err.message);
+        if (err.message?.includes('No sessions')) return;
 
         try {
             await sock.sendMessage(chatId, {
-                text: "Oops, something went sideways 😅 Try that again.",
+                text: "Something went sideways 😅 Try that again.",
                 quoted: message
             });
-        } catch (sendError) {
-            console.error('[Chatbot] Failed to send error message:', sendError.message);
+        } catch (sendErr) {
+            console.error('[Chatbot] Could not send error reply:', sendErr.message);
         }
     }
 }
 
-// ─── Command handler ───────────────────────────────────────────────────────
+// ── Plugin export ─────────────────────────────────────────────────────────────
 module.exports = {
-    command: 'chatbot',
-    aliases: ['bot', 'ai'],
-    category: 'admin',
+    command:     'chatbot',
+    aliases:     ['bot', 'ai'],
+    category:    'admin',
     description: 'Enable or disable AI chatbot for the group',
-    usage: '.chatbot <on|off>',
-    groupOnly: true,
-    adminOnly: true,
+    usage:       '.chatbot <on|off|stats|clear>',
+    groupOnly:   true,
+    adminOnly:   true,
 
+    // Called once when bot connects — load enabled groups from DB
+    async onLoad(sock) {
+        try {
+            const all = await dbSettings.getAll();
+            for (const [chatId, val] of Object.entries(all)) {
+                if (val?.enabled) enabledGroups.add(chatId);
+            }
+            console.log(`[Chatbot] Ready — ${enabledGroups.size} group(s) enabled`);
+        } catch (err) {
+            console.error('[Chatbot] onLoad error:', err.message);
+        }
+    },
+
+    // Called on every incoming message
+    async onMessage(sock, message, context) {
+        await handleChatbotMessage(sock, message, context);
+    },
+
+    // Scheduled jobs
+    schedules: [
+        {
+            // Flush memory to DB every 10 minutes
+            every:   PERSIST_EVERY_MS,
+            handler: async () => { await persistMemory(); }
+        }
+    ],
+
+    // Admin command handler — no typing delays here, all responses are instant
     async handler(sock, message, args, context = {}) {
-        const chatId = context.chatId || message.key.remoteJid;
-        const match = args.join(' ').toLowerCase().trim();
+        const chatId   = context.chatId || message.key.remoteJid;
+        const senderId = message.key.participant || message.key.remoteJid;
+        const match    = args.join(' ').toLowerCase().trim();
 
-        // ── Show menu (no typing delay — instant) ──
+        // ── No args → show menu ───────────────────────────────────────────────
         if (!match) {
             return sock.sendMessage(chatId, {
-                text: `*🤖 CHATBOT SETUP*\n\n` +
-                      `*Storage:* ${HAS_DB ? 'Database' : 'File System'}\n` +
-                      `*APIs:* ${API_ENDPOINTS.length} endpoints with auto-fallback\n` +
-                      `*Active users in memory:* ${chatMemory.messages.size}\n\n` +
+                text: `*🤖 CHATBOT*\n\n` +
+                      `*Status:* ${enabledGroups.has(chatId) ? '✅ Enabled' : '❌ Disabled'}\n` +
+                      `*AI Endpoints:* ${API_ENDPOINTS.length} (auto-fallback)\n` +
+                      `*Users in memory:* ${memory.history.size}\n\n` +
                       `*Commands:*\n` +
-                      `• \`.chatbot on\` — Enable chatbot\n` +
-                      `• \`.chatbot off\` — Disable chatbot\n\n` +
+                      `• \`.chatbot on\` — Enable\n` +
+                      `• \`.chatbot off\` — Disable\n` +
+                      `• \`.chatbot stats\` — API health & memory stats\n` +
+                      `• \`.chatbot clear\` — Wipe your personal memory\n\n` +
                       `*How it works:*\n` +
-                      `Mention or reply to me in the group and I'll respond.\n\n` +
-                      `*Features:*\n` +
-                      `• Natural Nigerian-style conversations\n` +
-                      `• Remembers context per user (last 20 messages)\n` +
-                      `• Personality-based replies\n` +
-                      `• Auto API fallback if one fails`,
+                      `Mention me or reply to my messages. I remember your name, interests, ` +
+                      `and mood over time — even after restarts.`,
                 quoted: message
             });
         }
 
-        const data = await loadUserGroupData();
-
-        // ── Enable ──
+        // ── on ────────────────────────────────────────────────────────────────
         if (match === 'on') {
-            if (data.chatbot[chatId]) {
+            if (enabledGroups.has(chatId)) {
                 return sock.sendMessage(chatId, {
                     text: '⚠️ *Chatbot is already enabled for this group.*',
                     quoted: message
                 });
             }
-            data.chatbot[chatId] = true;
-            await saveUserGroupData(data);
+            enabledGroups.add(chatId);
+            await dbSettings.set(chatId, { enabled: true, enabledAt: Date.now() });
             console.log(`[Chatbot] Enabled for ${chatId}`);
             return sock.sendMessage(chatId, {
-                text: '✅ *Chatbot enabled!*\n\nMention me or reply to my messages to chat.',
+                text: '✅ *Chatbot enabled!*\n\nMention me or reply to my messages to start chatting.',
                 quoted: message
             });
         }
 
-        // ── Disable ──
+        // ── off ───────────────────────────────────────────────────────────────
         if (match === 'off') {
-            if (!data.chatbot[chatId]) {
+            if (!enabledGroups.has(chatId)) {
                 return sock.sendMessage(chatId, {
                     text: '⚠️ *Chatbot is already disabled for this group.*',
                     quoted: message
                 });
             }
-            delete data.chatbot[chatId];
-            await saveUserGroupData(data);
+            enabledGroups.delete(chatId);
+            await dbSettings.del(chatId);
             console.log(`[Chatbot] Disabled for ${chatId}`);
             return sock.sendMessage(chatId, {
-                text: '❌ *Chatbot disabled!*\n\nI will no longer respond to mentions.',
+                text: '❌ *Chatbot disabled.*\n\nI will no longer respond to mentions.',
                 quoted: message
             });
         }
 
-        // ── Invalid ──
+        // ── stats ─────────────────────────────────────────────────────────────
+        if (match === 'stats') {
+            const failureLines = API_ENDPOINTS
+                .map(a => `• ${a.name}: ${apiFailures[a.name]} failure(s)`)
+                .join('\n');
+
+            return sock.sendMessage(chatId, {
+                text: `*📊 CHATBOT STATS*\n\n` +
+                      `*Enabled groups:* ${enabledGroups.size}\n` +
+                      `*Users in memory:* ${memory.history.size}\n` +
+                      `*Profiles tracked:* ${memory.profiles.size}\n\n` +
+                      `*API Failures (this session):*\n${failureLines}`,
+                quoted: message
+            });
+        }
+
+        // ── clear — wipe the requesting user's memory ─────────────────────────
+        if (match === 'clear') {
+            memory.history.delete(senderId);
+            memory.profiles.delete(senderId);
+            await Promise.all([
+                dbHistory.del(senderId),
+                dbProfiles.del(senderId)
+            ]);
+            return sock.sendMessage(chatId, {
+                text: '🧹 *Your chat memory has been cleared.* Fresh start!',
+                quoted: message
+            });
+        }
+
+        // ── invalid ───────────────────────────────────────────────────────────
         return sock.sendMessage(chatId, {
-            text: '❌ *Invalid command.*\n\nUse: `.chatbot on` or `.chatbot off`',
+            text: '❌ *Unknown command.*\n\nUse `.chatbot` to see all options.',
             quoted: message
         });
-    },
-
-    handleChatbotResponse,
-    loadUserGroupData,
-    saveUserGroupData
+    }
 };
