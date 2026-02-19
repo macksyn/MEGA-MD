@@ -282,8 +282,11 @@ function buildPrompt(userMessage, senderId) {
         : "Match the language register they use — formal, casual, or mixed as needed.";
 
     const interestHint = profile.interests?.length
-        ? `If it comes up naturally, you can reference their interests (${profile.interests.join(', ')}) — but never force it.`
-        : '';
+    ? `You know their general interests are: ${profile.interests.join(', ')}. ` +
+      `You can acknowledge these naturally BUT only reference specific details (like a club name, favourite artist, etc.) ` +
+      `if they have explicitly told you. Never assume, guess, or use placeholders like "[Club Name]" or "[Artist]". ` +
+      `If you don't know the specific detail, ask casually instead.`
+    : '';
 
     const historyBlock = hist.slice(-10).map((m, i) => `[${i + 1}] ${m}`).join('\n');
 
