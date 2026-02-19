@@ -1,20 +1,11 @@
 // plugins/attendance.js - MEGA-MD Attendance System
-// Storage refactored to use separate physical tables via pluginStore.table().
-//
-// Physical tables created automatically in the database:
-//   plugin_attendance_users    → per-user stats (streak, lastAttendance, etc.)
-//   plugin_attendance_records  → per-user attendance history
-//   plugin_attendance_settings → plugin configuration
-//
-// All logic is unchanged from the previous version.
 
 const moment = require('moment-timezone');
 const isAdmin = require('../lib/isAdmin');
-const { isOwnerOrSudo } = require('../lib/isOwner');
+const isOwnerOrSudo = require('../lib/isOwner');
 const { createStore } = require('../lib/pluginStore');
 const bus = require('../lib/pluginBus');
 
-// Try to import activity tracker (optional dependency)
 let activityTracker;
 try {
   activityTracker = require('./activitytracker');
@@ -22,16 +13,13 @@ try {
   console.log('[ATTENDANCE] Activity tracker not available (optional)');
 }
 
-// ===== TIMEZONE =====
 moment.tz.setDefault('Africa/Lagos');
 
-// ===== PLUGIN STORE — three separate physical tables =====
-const db       = createStore('attendance');
-const dbUsers    = db.table('users');    // → plugin_attendance_users
-const dbRecords  = db.table('records'); // → plugin_attendance_records
-const dbSettings = db.table('settings');// → plugin_attendance_settings
+const db        = createStore('attendance');
+const dbUsers    = db.table('users');
+const dbRecords  = db.table('records');
+const dbSettings = db.table('settings');
 
-// ===== DEFAULT SETTINGS =====
 const defaultSettings = {
   rewardAmount: 500,
   requireImage: false,
@@ -44,30 +32,22 @@ const defaultSettings = {
   preferredDateFormat: 'DD/MM'
 };
 
-// ===== IN-MEMORY CACHE =====
 const userCache = new Map();
-const cacheTimeout = 5 * 60 * 1000; // 5 minutes
+const cacheTimeout = 5 * 60 * 1000;
 
-// Cache cleanup
 setInterval(() => {
   const now = Date.now();
   for (const [userId, data] of userCache.entries()) {
-    if (now - data.timestamp > cacheTimeout) {
-      userCache.delete(userId);
-    }
+    if (now - data.timestamp > cacheTimeout) userCache.delete(userId);
   }
 }, 60000);
 
-// ===== SETTINGS MANAGEMENT =====
-// All settings are stored as a single record keyed 'config' in plugin_attendance_settings
 let attendanceSettings = { ...defaultSettings };
 
 async function loadSettings() {
   try {
     const saved = await dbSettings.get('config');
-    if (saved) {
-      attendanceSettings = { ...defaultSettings, ...saved };
-    }
+    if (saved) attendanceSettings = { ...defaultSettings, ...saved };
   } catch (error) {
     console.error('[ATTENDANCE] Error loading settings:', error);
   }
@@ -81,14 +61,32 @@ async function saveSettings() {
   }
 }
 
-// ===== USER MANAGEMENT =====
-// Each user is a row in plugin_attendance_users keyed by their userId.
-async function initUser(userId) {
-  // Check cache first
-  const cached = userCache.get(userId);
-  if (cached && Date.now() - cached.timestamp < cacheTimeout) {
-    return cached.user;
+// ===== AUTH — mirrors antilink.js pattern exactly =====
+/**
+ * @param {string} senderId  - raw JID from message.key.participant || message.key.remoteJid
+ * @param {object} sock
+ * @param {string} chatId
+ * @returns {{ isOwner: boolean, isSenderAdmin: boolean }}
+ */
+async function resolveAuth(senderId, sock, chatId) {
+  const isOwner = await isOwnerOrSudo(senderId, sock, chatId);
+
+  let isSenderAdmin = false;
+  if (chatId && chatId.endsWith('@g.us')) {
+    try {
+      const result = await isAdmin(sock, chatId, senderId);
+      isSenderAdmin = result.isSenderAdmin;
+    } catch (e) {
+      console.error('[ATTENDANCE] isAdmin error:', e.message);
+    }
   }
+
+  return { isOwner, isSenderAdmin };
+}
+
+async function initUser(userId) {
+  const cached = userCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < cacheTimeout) return cached.user;
 
   let userData = await dbUsers.get(userId);
   if (!userData) {
@@ -104,27 +102,21 @@ async function initUser(userId) {
     };
     await dbUsers.set(userId, userData);
   }
-
   userCache.set(userId, { user: userData, timestamp: Date.now() });
   return userData;
 }
 
 async function getUserData(userId) {
-  // Check cache first
   const cached = userCache.get(userId);
-  if (cached && Date.now() - cached.timestamp < cacheTimeout) {
-    return cached.user;
-  }
+  if (cached && Date.now() - cached.timestamp < cacheTimeout) return cached.user;
   return await dbUsers.get(userId);
 }
 
 async function updateUserData(userId, patch) {
   await dbUsers.patch(userId, { ...patch, updatedAt: new Date() });
-  // Invalidate cache so next read is fresh
   userCache.delete(userId);
 }
 
-// ===== MONTH NAMES MAPPING =====
 const MONTH_NAMES = {
   'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
   'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12,
@@ -132,7 +124,6 @@ const MONTH_NAMES = {
   'aug': 8, 'sep': 9, 'sept': 9, 'oct': 10, 'nov': 11, 'dec': 12
 };
 
-// ===== DATE PARSING UTILITIES =====
 function isLeapYear(year) {
   return year ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) : false;
 }
@@ -154,29 +145,22 @@ function parseBirthday(dobText) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Pattern 1: Month Day, Year
   let match = norm.match(/([a-z]+)\s+(\d{1,2}),?\s*(\d{4})?/i);
   if (match) {
     month = MONTH_NAMES[match[1]] || MONTH_NAMES[match[1].substring(0, 3)];
     day = parseInt(match[2]);
     year = match[3] ? parseInt(match[3]) : null;
-    if (month && day >= 1 && day <= 31) {
-      return formatBirthday(day, month, year, cleaned);
-    }
+    if (month && day >= 1 && day <= 31) return formatBirthday(day, month, year, cleaned);
   }
 
-  // Pattern 2: Day Month Year
   match = norm.match(/(\d{1,2})\s+([a-z]+)\s*(\d{4})?/i);
   if (match) {
     day = parseInt(match[1]);
     month = MONTH_NAMES[match[2]] || MONTH_NAMES[match[2].substring(0, 3)];
     year = match[3] ? parseInt(match[3]) : null;
-    if (month && day >= 1 && day <= 31) {
-      return formatBirthday(day, month, year, cleaned);
-    }
+    if (month && day >= 1 && day <= 31) return formatBirthday(day, month, year, cleaned);
   }
 
-  // Pattern 3: MM/DD/YYYY or DD/MM/YYYY
   match = norm.match(/(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/);
   if (match) {
     const num1 = parseInt(match[1]);
@@ -193,30 +177,20 @@ function parseBirthday(dobText) {
       else                               { day = num1; month = num2; }
     }
 
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return formatBirthday(day, month, year, cleaned);
-    }
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return formatBirthday(day, month, year, cleaned);
   }
 
-  // Pattern 4: YYYY-MM-DD
   match = norm.match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
   if (match) {
-    year = parseInt(match[1]);
-    month = parseInt(match[2]);
-    day = parseInt(match[3]);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return formatBirthday(day, month, year, cleaned);
-    }
+    year = parseInt(match[1]); month = parseInt(match[2]); day = parseInt(match[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return formatBirthday(day, month, year, cleaned);
   }
 
-  // Pattern 5: Just month and day
   match = norm.match(/([a-z]+)\s+(\d{1,2})/i);
   if (match) {
     month = MONTH_NAMES[match[1]] || MONTH_NAMES[match[1].substring(0, 3)];
     day = parseInt(match[2]);
-    if (month && day >= 1 && day <= 31) {
-      return formatBirthday(day, month, null, cleaned);
-    }
+    if (month && day >= 1 && day <= 31) return formatBirthday(day, month, null, cleaned);
   }
 
   return null;
@@ -231,22 +205,15 @@ function formatBirthday(day, month, year, originalText) {
   if (day > daysInMonth[month - 1]) return null;
 
   return {
-    day,
-    month,
-    year,
+    day, month, year,
     monthName: monthNames[month - 1],
-    displayDate: year
-      ? `${monthNames[month - 1]} ${day}, ${year}`
-      : `${monthNames[month - 1]} ${day}`,
+    displayDate: year ? `${monthNames[month - 1]} ${day}, ${year}` : `${monthNames[month - 1]} ${day}`,
     searchKey: `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
     originalText,
     parsedAt: new Date().toISOString()
   };
 }
 
-// ===== ATTENDANCE RECORD MANAGEMENT =====
-// Each user has ONE row in plugin_attendance_records keyed by their userId.
-// The value is an array of records, newest first.
 async function saveAttendanceRecord(userId, attendanceData) {
   try {
     const record = {
@@ -258,9 +225,8 @@ async function saveAttendanceRecord(userId, attendanceData) {
       streak: attendanceData.streak,
       timestamp: new Date()
     };
-
     const existing = await dbRecords.getOrDefault(userId, []);
-    existing.unshift(record); // newest first
+    existing.unshift(record);
     await dbRecords.set(userId, existing);
     return true;
   } catch (error) {
@@ -277,17 +243,13 @@ async function getAttendanceRecords(userId, limit = 10) {
 async function cleanupRecords() {
   try {
     const cutoffTime = moment.tz('Africa/Lagos').subtract(90, 'days').valueOf();
-    const allRecords = await dbRecords.getAll(); // { userId: [...records] }
+    const allRecords = await dbRecords.getAll();
     let deletedCount = 0;
-
     for (const [userId, records] of Object.entries(allRecords)) {
-      const filtered = (records || []).filter(
-        r => new Date(r.timestamp).getTime() >= cutoffTime
-      );
+      const filtered = (records || []).filter(r => new Date(r.timestamp).getTime() >= cutoffTime);
       deletedCount += (records || []).length - filtered.length;
       await dbRecords.set(userId, filtered);
     }
-
     console.log(`✅ Attendance records cleanup completed (${deletedCount} records deleted)`);
     return deletedCount;
   } catch (error) {
@@ -296,7 +258,6 @@ async function cleanupRecords() {
   }
 }
 
-// ===== IMAGE DETECTION =====
 function hasImage(message) {
   try {
     return !!(
@@ -306,7 +267,6 @@ function hasImage(message) {
       message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage
     );
   } catch (error) {
-    console.error('[ATTENDANCE] Error checking for image:', error);
     return false;
   }
 }
@@ -314,12 +274,9 @@ function hasImage(message) {
 function getImageStatus(hasImg, isRequired) {
   return isRequired && !hasImg
     ? '❌ Image required but not found'
-    : hasImg
-      ? '📸 Image detected ✅'
-      : '📸 No image (optional)';
+    : hasImg ? '📸 Image detected ✅' : '📸 No image (optional)';
 }
 
-// ===== FORM VALIDATION =====
 const attendanceFormRegex = /GIST\s+HQ.*?\*?Name\*?[:].*?\*?Relationship\*?[:]/is;
 
 function validateAttendanceForm(body, hasImg = false) {
@@ -347,13 +304,13 @@ function validateAttendanceForm(body, hasImg = false) {
   }
 
   const requiredFields = [
-    { name: 'Name',         pattern: /\*?Name\*?[:]\s*([^\n]+)/i,         fieldName: '👤 Name',              extract: true },
-    { name: 'Location',     pattern: /\*?Location\*?[:]\s*([^\n]+)/i,     fieldName: '🌍 Location',           extract: true },
-    { name: 'Time',         pattern: /\*?Time\*?[:]\s*([^\n]+)/i,         fieldName: '⌚ Time',               extract: true },
-    { name: 'Weather',      pattern: /\*?Weather\*?[:]\s*([^\n]+)/i,      fieldName: '🌥 Weather',            extract: true },
-    { name: 'Mood',         pattern: /\*?Mood\*?[:]\s*([^\n]+)/i,         fieldName: '❤️‍🔥 Mood',            extract: true },
+    { name: 'Name',         pattern: /\*?Name\*?[:]\s*([^\n]+)/i,          fieldName: '👤 Name',              extract: true },
+    { name: 'Location',     pattern: /\*?Location\*?[:]\s*([^\n]+)/i,      fieldName: '🌍 Location',           extract: true },
+    { name: 'Time',         pattern: /\*?Time\*?[:]\s*([^\n]+)/i,          fieldName: '⌚ Time',               extract: true },
+    { name: 'Weather',      pattern: /\*?Weather\*?[:]\s*([^\n]+)/i,       fieldName: '🌥 Weather',            extract: true },
+    { name: 'Mood',         pattern: /\*?Mood\*?[:]\s*([^\n]+)/i,          fieldName: '❤️‍🔥 Mood',            extract: true },
     { name: 'DOB',          pattern: /\*?D\.?O\.?B\.?\*?[:]\s*([^\n]+)/i, fieldName: '🗓 D.O.B',             extract: true, isBirthday: true },
-    { name: 'Relationship', pattern: /\*?Relationship\*?[:]\s*([^\n]+)/i, fieldName: '👩‍❤️‍👨 Relationship', extract: true }
+    { name: 'Relationship', pattern: /\*?Relationship\*?[:]\s*([^\n]+)/i,  fieldName: '👩‍❤️‍👨 Relationship', extract: true }
   ];
 
   requiredFields.forEach(field => {
@@ -383,16 +340,13 @@ function validateAttendanceForm(body, hasImg = false) {
     validation.missingFields.push(`🔔 Wake up members (${missingWakeUps.join(', ')})`);
   } else {
     validation.hasWakeUpMembers = true;
-    validation.extractedData.wakeUpMembers = [
-      wakeUp1[1].trim(), wakeUp2[1].trim(), wakeUp3[1].trim()
-    ];
+    validation.extractedData.wakeUpMembers = [wakeUp1[1].trim(), wakeUp2[1].trim(), wakeUp3[1].trim()];
   }
 
   validation.isValidForm = validation.missingFields.length === 0;
   return validation;
 }
 
-// ===== STREAK MANAGEMENT =====
 function updateStreak(userId, userData, today) {
   const yesterday = moment.tz('Africa/Lagos').subtract(1, 'day').format('DD-MM-YYYY');
   if (userData.lastAttendance === yesterday) {
@@ -400,33 +354,13 @@ function updateStreak(userId, userData, today) {
   } else if (userData.lastAttendance !== today) {
     userData.streak = 1;
   }
-  if (userData.streak > (userData.longestStreak || 0)) {
-    userData.longestStreak = userData.streak;
-  }
+  if (userData.streak > (userData.longestStreak || 0)) userData.longestStreak = userData.streak;
   return userData.streak;
 }
 
-// ===== DATE UTILITIES =====
-function getNigeriaTime() {
-  return moment.tz('Africa/Lagos');
-}
+function getNigeriaTime() { return moment.tz('Africa/Lagos'); }
+function getCurrentDate() { return getNigeriaTime().format('DD-MM-YYYY'); }
 
-function getCurrentDate() {
-  return getNigeriaTime().format('DD-MM-YYYY');
-}
-
-// ===== AUTHORIZATION =====
-async function isAuthorized(sock, chatId, senderId) {
-  const bareNumber = senderId.split('@')[0];
-  if (attendanceSettings.adminNumbers.includes(bareNumber)) return true;
-  if (await isOwnerOrSudo(senderId, sock, chatId)) return true;
-  if (chatId.endsWith('@g.us')) {
-    return await isAdmin(sock, chatId, senderId);
-  }
-  return false;
-}
-
-// ===== AUTO ATTENDANCE HANDLER =====
 async function handleAutoAttendance(message, sock) {
   try {
     const messageText =
@@ -434,14 +368,14 @@ async function handleAutoAttendance(message, sock) {
       message.message?.extendedTextMessage?.text ||
       message.message?.imageMessage?.caption ||
       message.message?.videoMessage?.caption ||
-      message.body ||
-      '';
+      message.body || '';
+
     const senderId = message.key.participant || message.key.remoteJid;
     const chatId   = message.key.remoteJid;
 
     if (!attendanceFormRegex.test(messageText)) return false;
 
-    const today = getCurrentDate();
+    const today    = getCurrentDate();
     const userData = await initUser(senderId);
 
     if (userData.lastAttendance === today) {
@@ -455,11 +389,11 @@ async function handleAutoAttendance(message, sock) {
     const validation = validateAttendanceForm(messageText, messageHasImage);
 
     if (!validation.isValidForm) {
-      const errorMessage =
-        `❌ *INCOMPLETE ATTENDANCE FORM* \n\n📄 Please complete the following fields:\n\n` +
-        `${validation.missingFields.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\n` +
-        `💡 *Please fill out all required fields and try again.*`;
-      await sock.sendMessage(chatId, { text: errorMessage }, { quoted: message });
+      await sock.sendMessage(chatId, {
+        text: `❌ *INCOMPLETE ATTENDANCE FORM* \n\n📄 Please complete the following fields:\n\n` +
+              `${validation.missingFields.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\n` +
+              `💡 *Please fill out all required fields and try again.*`
+      }, { quoted: message });
       return true;
     }
 
@@ -472,7 +406,6 @@ async function handleAutoAttendance(message, sock) {
       displayName:      validation.extractedData.name || userData.displayName
     });
 
-    // Delegate birthday saving to the birthday plugin via the event bus.
     let birthdayMessage = '';
     if (validation.extractedData.parsedBirthday && validation.extractedData.name) {
       bus.emit('attendance:birthday', {
@@ -483,7 +416,6 @@ async function handleAutoAttendance(message, sock) {
       birthdayMessage = `\n🎂 Birthday saved/updated: ${validation.extractedData.parsedBirthday.displayDate}.`;
     }
 
-    // Economy is disabled — reward saved as 0
     await saveAttendanceRecord(senderId, {
       date:          today,
       extractedData: validation.extractedData,
@@ -492,20 +424,15 @@ async function handleAutoAttendance(message, sock) {
       streak:        currentStreak
     });
 
-    // Notify activity tracker if available
     if (activityTracker?.trackActivity) {
-      try {
-        await activityTracker.trackActivity({ ...message, _attendanceEvent: true });
-      } catch (err) {
-        console.error('[ATTENDANCE] Error notifying activity tracker:', err);
-      }
+      try { await activityTracker.trackActivity({ ...message, _attendanceEvent: true }); } catch (err) {}
     }
 
-    const successMessage =
-      `✅ *ATTENDANCE APPROVED!* ✅\n\n🔥 Current streak: ${currentStreak} days` +
-      (birthdayMessage ? `\n${birthdayMessage}` : '') +
-      `\n\n🎉 *Thank you for your participation!*`;
-    await sock.sendMessage(chatId, { text: successMessage }, { quoted: message });
+    await sock.sendMessage(chatId, {
+      text: `✅ *ATTENDANCE APPROVED!* ✅\n\n🔥 Current streak: ${currentStreak} days` +
+            (birthdayMessage ? `\n${birthdayMessage}` : '') +
+            `\n\n🎉 *Thank you for your participation!*`
+    }, { quoted: message });
 
     return true;
   } catch (error) {
@@ -515,6 +442,7 @@ async function handleAutoAttendance(message, sock) {
 }
 
 // ===== COMMAND HANDLERS =====
+
 async function showAttendanceMenu(sock, chatId, message) {
   await sock.sendMessage(chatId, {
     text: `📋 *ATTENDANCE SYSTEM* 📋\n\n` +
@@ -535,7 +463,7 @@ async function showAttendanceMenu(sock, chatId, message) {
 async function handleStats(sock, chatId, senderId, message) {
   try {
     const userData = await initUser(senderId);
-    const today = getCurrentDate();
+    const today    = getCurrentDate();
 
     let statsMessage =
       `📊 *YOUR ATTENDANCE STATS* 📊\n\n` +
@@ -555,18 +483,24 @@ async function handleStats(sock, chatId, senderId, message) {
 
     await sock.sendMessage(chatId, { text: statsMessage }, { quoted: message });
   } catch (error) {
-    await sock.sendMessage(chatId, {
-      text: '❌ *Error loading stats. Please try again.*'
-    }, { quoted: message });
+    await sock.sendMessage(chatId, { text: '❌ *Error loading stats. Please try again.*' }, { quoted: message });
     console.error('[ATTENDANCE] Stats error:', error);
   }
 }
 
 async function handleSettings(sock, chatId, senderId, message, args) {
-  if (!(await isAuthorized(sock, chatId, senderId))) {
-    await sock.sendMessage(chatId, {
-      text: '🚫 Only admins can use this command.'
-    }, { quoted: message });
+  // ── Auth check — mirrors antilink pattern ──
+  const isOwner = await isOwnerOrSudo(senderId, sock, chatId);
+  let isSenderAdmin = false;
+  if (chatId.endsWith('@g.us')) {
+    try {
+      const result = await isAdmin(sock, chatId, senderId);
+      isSenderAdmin = result.isSenderAdmin;
+    } catch (e) {}
+  }
+
+  if (!isOwner && !isSenderAdmin) {
+    await sock.sendMessage(chatId, { text: '🚫 Only admins can use this command.' }, { quoted: message });
     return;
   }
 
@@ -641,8 +575,7 @@ async function handleTest(sock, chatId, message, args) {
     message.message?.conversation ||
     message.message?.extendedTextMessage?.text ||
     message.message?.imageMessage?.caption ||
-    message.message?.videoMessage?.caption ||
-    '';
+    message.message?.videoMessage?.caption || '';
   const testText = fullText.replace(/^[.!#]attendance\s+test\s*/i, '').trim();
 
   if (!testText) {
@@ -701,7 +634,7 @@ async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
 
     if (records.length === 0) {
       await sock.sendMessage(chatId, {
-        text: `📋 *No Attendance Records*\n\nYou haven't marked any attendance yet. Submit your GIST HQ attendance form to get started!`
+        text: `📋 *No Attendance Records*\n\nYou haven't marked any attendance yet.`
       }, { quoted: message });
       return;
     }
@@ -717,21 +650,26 @@ async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
         `   ⏰ ${moment(record.timestamp).tz('Africa/Lagos').format('DD/MM/YYYY HH:mm')}\n\n`;
     });
     recordsText += `💡 *Use: .attendance records [number]* to show more/less records (max 50)`;
-
     await sock.sendMessage(chatId, { text: recordsText }, { quoted: message });
   } catch (error) {
-    await sock.sendMessage(chatId, {
-      text: '❌ *Error loading attendance records. Please try again.*'
-    }, { quoted: message });
+    await sock.sendMessage(chatId, { text: '❌ *Error loading attendance records. Please try again.*' }, { quoted: message });
     console.error('[ATTENDANCE] Records error:', error);
   }
 }
 
 async function handleCleanup(sock, chatId, senderId, message) {
-  if (!(await isAuthorized(sock, chatId, senderId))) {
-    await sock.sendMessage(chatId, {
-      text: '🚫 Only admins can use this command.'
-    }, { quoted: message });
+  // ── Owner/sudo only ──
+  const isOwner = await isOwnerOrSudo(senderId, sock, chatId);
+  let isSenderAdmin = false;
+  if (chatId.endsWith('@g.us')) {
+    try {
+      const result = await isAdmin(sock, chatId, senderId);
+      isSenderAdmin = result.isSenderAdmin;
+    } catch (e) {}
+  }
+
+  if (!isOwner && !isSenderAdmin) {
+    await sock.sendMessage(chatId, { text: '🚫 Only admins can use this command.' }, { quoted: message });
     return;
   }
 
@@ -739,21 +677,16 @@ async function handleCleanup(sock, chatId, senderId, message) {
     await sock.sendMessage(chatId, {
       text: '🧹 Starting cleanup of old attendance records (90+ days)...'
     }, { quoted: message });
-
     const deletedCount = await cleanupRecords();
-
     await sock.sendMessage(chatId, {
       text: `✅ Cleanup completed! Deleted ${deletedCount} old records.`
     }, { quoted: message });
   } catch (error) {
-    await sock.sendMessage(chatId, {
-      text: '❌ *Error during cleanup. Please try again.*'
-    }, { quoted: message });
+    await sock.sendMessage(chatId, { text: '❌ *Error during cleanup. Please try again.*' }, { quoted: message });
     console.error('[ATTENDANCE] Cleanup error:', error);
   }
 }
 
-// ===== PLUGIN EXPORT =====
 module.exports = {
   command: 'attendance',
   aliases: ['att', 'attendstats', 'mystats'],
@@ -761,24 +694,20 @@ module.exports = {
   description: 'Advanced attendance system with form validation and streaks',
   usage: '.attendance [stats|settings|test|records|help]',
 
-  // Called once by pluginLoader after the bot connects.
   async onLoad(sock) {
     await loadSettings();
     console.log('[ATTENDANCE] Plugin loaded.');
-    console.log('[ATTENDANCE] Tables: plugin_attendance_users | plugin_attendance_records | plugin_attendance_settings');
   },
 
-  // Called by pluginLoader on every incoming message.
   async onMessage(sock, message, context) {
     if (!attendanceSettings.autoDetection) return;
     await handleAutoAttendance(message, sock);
   },
 
   async handler(sock, message, args, context) {
-    const { chatId, senderId } = context;
-    const channelInfo = context.channelInfo || {};
-
-    console.log('[ATTENDANCE] Handler called!', { args, chatId, senderId });
+    const chatId   = context.chatId || message.key.remoteJid;
+    // ── Always derive senderId from the message key directly (antilink pattern) ──
+    const senderId = message.key.participant || message.key.remoteJid;
 
     const subCommand = args[0]?.toLowerCase();
 
@@ -811,17 +740,18 @@ module.exports = {
         break;
       default:
         await sock.sendMessage(chatId, {
-          text: `❓ Unknown attendance command: *${subCommand}*\n\nUse *.attendance help* to see available commands.`,
-          ...channelInfo
+          text: `❓ Unknown attendance command: *${subCommand}*\n\nUse *.attendance help* to see available commands.`
         }, { quoted: message });
     }
   }
 };
 
 // ===== EXPORT UTILITIES (for other plugins) =====
-module.exports.parseBirthday        = parseBirthday;
-module.exports.validateAttendanceForm = validateAttendanceForm;
-module.exports.hasImage             = hasImage;
-module.exports.getCurrentDate       = getCurrentDate;
-module.exports.getNigeriaTime       = getNigeriaTime;
-module.exports.handleAutoAttendance = handleAutoAttendance;
+module.exports.attendance = {
+  parseBirthday,
+  validateAttendanceForm,
+  hasImage,
+  getCurrentDate,
+  getNigeriaTime,
+  handleAutoAttendance
+};
