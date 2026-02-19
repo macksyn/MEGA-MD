@@ -10,7 +10,7 @@
 
 const moment = require('moment-timezone');
 const isAdmin = require('../lib/isAdmin');
-const isOwnerOrSudo = require('../lib/isOwner');
+const { isOwnerOrSudo } = require('../lib/isOwner');
 const { createStore } = require('../lib/pluginStore');
 const bus = require('../lib/pluginBus');
 
@@ -818,7 +818,7 @@ module.exports = {
   }
 };
 
-// Named exports preserved for any plugins that import these utilities directly
+// ===== EXPORT UTILITIES (for other plugins) =====
 module.exports = {
   parseBirthday,
   validateAttendanceForm,
@@ -827,3 +827,10 @@ module.exports = {
   getNigeriaTime,
   handleAutoAttendance
 };
+// Named exports preserved for any plugins that import these utilities directly
+/* module.exports.parseBirthday        = parseBirthday;
+module.exports.validateAttendanceForm = validateAttendanceForm;
+module.exports.hasImage             = hasImage;
+module.exports.getCurrentDate       = getCurrentDate;
+module.exports.getNigeriaTime       = getNigeriaTime;
+module.exports.handleAutoAttendance = handleAutoAttendance;*/
