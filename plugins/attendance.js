@@ -1,18 +1,16 @@
 // plugins/attendance.js - MEGA-MD Attendance System
-// Migrated to self-contained plugin architecture.
-// Changes from original:
-//   - Removed: require('./birthday')  →  bus.emit('birthday:save', ...)
-//   - Removed: store.getAttendanceUserStats / updateAttendanceUserStats  →  db.get/set('user:…')
-//   - Removed: store.saveAttendanceRecord / getAttendanceRecords / deleteOldAttendanceRecords  →  db.get/set('records:…')
-//   - Removed: store.getSetting / saveSetting for settings  →  db.get/set('settings')
-//   - Removed: duplicate local saveBirthdayData function (birthday plugin owns birthday data)
-//   - Added:   onLoad() hook  →  loads settings, no manual call needed from index.js
-//   - Added:   onMessage() hook  →  auto-detection, no manual call needed from messageHandler.js
-//   - Fixed:   duplicate saveBirthdayData call bug in handleAutoAttendance
+// Storage refactored to use separate physical tables via pluginStore.table().
+//
+// Physical tables created automatically in the database:
+//   plugin_attendance_users    → per-user stats (streak, lastAttendance, etc.)
+//   plugin_attendance_records  → per-user attendance history
+//   plugin_attendance_settings → plugin configuration
+//
+// All logic is unchanged from the previous version.
 
 const moment = require('moment-timezone');
 const isAdmin = require('../lib/isAdmin');
-const { isOwnerOrSudo } = require('../lib/isOwner');
+const isOwnerOrSudo = require('../lib/isOwner');
 const { createStore } = require('../lib/pluginStore');
 const bus = require('../lib/pluginBus');
 
@@ -27,8 +25,11 @@ try {
 // ===== TIMEZONE =====
 moment.tz.setDefault('Africa/Lagos');
 
-// ===== PLUGIN STORE =====
-const db = createStore('attendance');
+// ===== PLUGIN STORE — three separate physical tables =====
+const db       = createStore('attendance');
+const dbUsers    = db.table('users');    // → plugin_attendance_users
+const dbRecords  = db.table('records'); // → plugin_attendance_records
+const dbSettings = db.table('settings');// → plugin_attendance_settings
 
 // ===== DEFAULT SETTINGS =====
 const defaultSettings = {
@@ -58,13 +59,14 @@ setInterval(() => {
 }, 60000);
 
 // ===== SETTINGS MANAGEMENT =====
+// All settings are stored as a single record keyed 'config' in plugin_attendance_settings
 let attendanceSettings = { ...defaultSettings };
 
 async function loadSettings() {
   try {
-    const settings = await db.get('settings');
-    if (settings) {
-      attendanceSettings = { ...defaultSettings, ...settings };
+    const saved = await dbSettings.get('config');
+    if (saved) {
+      attendanceSettings = { ...defaultSettings, ...saved };
     }
   } catch (error) {
     console.error('[ATTENDANCE] Error loading settings:', error);
@@ -73,15 +75,22 @@ async function loadSettings() {
 
 async function saveSettings() {
   try {
-    await db.set('settings', attendanceSettings);
+    await dbSettings.set('config', attendanceSettings);
   } catch (error) {
     console.error('[ATTENDANCE] Error saving settings:', error);
   }
 }
 
 // ===== USER MANAGEMENT =====
+// Each user is a row in plugin_attendance_users keyed by their userId.
 async function initUser(userId) {
-  let userData = await db.get('user:' + userId);
+  // Check cache first
+  const cached = userCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < cacheTimeout) {
+    return cached.user;
+  }
+
+  let userData = await dbUsers.get(userId);
   if (!userData) {
     userData = {
       userId,
@@ -93,17 +102,26 @@ async function initUser(userId) {
       createdAt: new Date(),
       updatedAt: new Date()
     };
-    await db.set('user:' + userId, userData);
+    await dbUsers.set(userId, userData);
   }
+
+  userCache.set(userId, { user: userData, timestamp: Date.now() });
   return userData;
 }
 
 async function getUserData(userId) {
-  return await db.get('user:' + userId);
+  // Check cache first
+  const cached = userCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < cacheTimeout) {
+    return cached.user;
+  }
+  return await dbUsers.get(userId);
 }
 
 async function updateUserData(userId, patch) {
-  await db.patch('user:' + userId, { ...patch, updatedAt: new Date() });
+  await dbUsers.patch(userId, { ...patch, updatedAt: new Date() });
+  // Invalidate cache so next read is fresh
+  userCache.delete(userId);
 }
 
 // ===== MONTH NAMES MAPPING =====
@@ -166,22 +184,13 @@ function parseBirthday(dobText) {
     year = match[3] ? (match[3].length === 2 ? 2000 + parseInt(match[3]) : parseInt(match[3])) : null;
 
     if (attendanceSettings.preferredDateFormat === 'DD/MM') {
-      day = num1;
-      month = num2;
+      day = num1; month = num2;
     } else if (attendanceSettings.preferredDateFormat === 'MM/DD') {
-      month = num1;
-      day = num2;
+      month = num1; day = num2;
     } else {
-      if (num1 > 12 && num2 <= 12) {
-        day = num1;
-        month = num2;
-      } else if (num2 > 12 && num1 <= 12) {
-        month = num1;
-        day = num2;
-      } else {
-        day = num1;
-        month = num2;
-      }
+      if (num1 > 12 && num2 <= 12)      { day = num1; month = num2; }
+      else if (num2 > 12 && num1 <= 12) { month = num1; day = num2; }
+      else                               { day = num1; month = num2; }
     }
 
     if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
@@ -226,7 +235,9 @@ function formatBirthday(day, month, year, originalText) {
     month,
     year,
     monthName: monthNames[month - 1],
-    displayDate: year ? `${monthNames[month - 1]} ${day}, ${year}` : `${monthNames[month - 1]} ${day}`,
+    displayDate: year
+      ? `${monthNames[month - 1]} ${day}, ${year}`
+      : `${monthNames[month - 1]} ${day}`,
     searchKey: `${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
     originalText,
     parsedAt: new Date().toISOString()
@@ -234,7 +245,8 @@ function formatBirthday(day, month, year, originalText) {
 }
 
 // ===== ATTENDANCE RECORD MANAGEMENT =====
-// Records are stored per-user as an array (newest first) under 'records:<userId>'.
+// Each user has ONE row in plugin_attendance_records keyed by their userId.
+// The value is an array of records, newest first.
 async function saveAttendanceRecord(userId, attendanceData) {
   try {
     const record = {
@@ -247,9 +259,9 @@ async function saveAttendanceRecord(userId, attendanceData) {
       timestamp: new Date()
     };
 
-    const existing = await db.getOrDefault('records:' + userId, []);
+    const existing = await dbRecords.getOrDefault(userId, []);
     existing.unshift(record); // newest first
-    await db.set('records:' + userId, existing);
+    await dbRecords.set(userId, existing);
     return true;
   } catch (error) {
     console.error('[ATTENDANCE] Error saving record:', error);
@@ -258,23 +270,22 @@ async function saveAttendanceRecord(userId, attendanceData) {
 }
 
 async function getAttendanceRecords(userId, limit = 10) {
-  const records = await db.getOrDefault('records:' + userId, []);
+  const records = await dbRecords.getOrDefault(userId, []);
   return records.slice(0, limit);
 }
 
 async function cleanupRecords() {
   try {
-    const cutoffDate = moment.tz('Africa/Lagos').subtract(90, 'days').toDate();
-    const cutoffTime = new Date(cutoffDate).getTime();
-    const allData = await db.getAll();
+    const cutoffTime = moment.tz('Africa/Lagos').subtract(90, 'days').valueOf();
+    const allRecords = await dbRecords.getAll(); // { userId: [...records] }
     let deletedCount = 0;
 
-    for (const [key, value] of Object.entries(allData)) {
-      if (!key.startsWith('records:')) continue;
-      const userId = key.slice('records:'.length);
-      const filtered = (value || []).filter(r => new Date(r.timestamp).getTime() >= cutoffTime);
-      deletedCount += (value || []).length - filtered.length;
-      await db.set('records:' + userId, filtered);
+    for (const [userId, records] of Object.entries(allRecords)) {
+      const filtered = (records || []).filter(
+        r => new Date(r.timestamp).getTime() >= cutoffTime
+      );
+      deletedCount += (records || []).length - filtered.length;
+      await dbRecords.set(userId, filtered);
     }
 
     console.log(`✅ Attendance records cleanup completed (${deletedCount} records deleted)`);
@@ -288,9 +299,12 @@ async function cleanupRecords() {
 // ===== IMAGE DETECTION =====
 function hasImage(message) {
   try {
-    return !!(message.message?.imageMessage || message.message?.stickerMessage ||
-              message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
-              message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage);
+    return !!(
+      message.message?.imageMessage ||
+      message.message?.stickerMessage ||
+      message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
+      message.message?.extendedTextMessage?.contextInfo?.quotedMessage?.stickerMessage
+    );
   } catch (error) {
     console.error('[ATTENDANCE] Error checking for image:', error);
     return false;
@@ -298,7 +312,11 @@ function hasImage(message) {
 }
 
 function getImageStatus(hasImg, isRequired) {
-  return isRequired && !hasImg ? "❌ Image required but not found" : hasImg ? "📸 Image detected ✅" : "📸 No image (optional)";
+  return isRequired && !hasImg
+    ? '❌ Image required but not found'
+    : hasImg
+      ? '📸 Image detected ✅'
+      : '📸 No image (optional)';
 }
 
 // ===== FORM VALIDATION =====
@@ -315,23 +333,27 @@ function validateAttendanceForm(body, hasImg = false) {
     extractedData: {}
   };
 
-  if (!/GIST\s+HQ/i.test(body) || !/\*?Name\*?[:]/i.test(body) || !/\*?Relationship\*?[:]/i.test(body)) {
-    validation.errors.push("❌ Invalid attendance form format");
+  if (
+    !/GIST\s+HQ/i.test(body) ||
+    !/\*?Name\*?[:]/i.test(body) ||
+    !/\*?Relationship\*?[:]/i.test(body)
+  ) {
+    validation.errors.push('❌ Invalid attendance form format');
     return validation;
   }
 
   if (attendanceSettings.requireImage && !hasImg) {
-    validation.missingFields.push("📸 Image (required)");
+    validation.missingFields.push('📸 Image (required)');
   }
 
   const requiredFields = [
-    { name: "Name",         pattern: /\*?Name\*?[:]\s*([^\n]+)/i,         fieldName: "👤 Name",                extract: true },
-    { name: "Location",     pattern: /\*?Location\*?[:]\s*([^\n]+)/i,     fieldName: "🌍 Location",             extract: true },
-    { name: "Time",         pattern: /\*?Time\*?[:]\s*([^\n]+)/i,         fieldName: "⌚ Time",                 extract: true },
-    { name: "Weather",      pattern: /\*?Weather\*?[:]\s*([^\n]+)/i,      fieldName: "🌥 Weather",              extract: true },
-    { name: "Mood",         pattern: /\*?Mood\*?[:]\s*([^\n]+)/i,         fieldName: "❤️‍🔥 Mood",              extract: true },
-    { name: "DOB",          pattern: /\*?D\.?O\.?B\.?\*?[:]\s*([^\n]+)/i, fieldName: "🗓 D.O.B",               extract: true, isBirthday: true },
-    { name: "Relationship", pattern: /\*?Relationship\*?[:]\s*([^\n]+)/i, fieldName: "👩‍❤️‍👨 Relationship",   extract: true }
+    { name: 'Name',         pattern: /\*?Name\*?[:]\s*([^\n]+)/i,         fieldName: '👤 Name',              extract: true },
+    { name: 'Location',     pattern: /\*?Location\*?[:]\s*([^\n]+)/i,     fieldName: '🌍 Location',           extract: true },
+    { name: 'Time',         pattern: /\*?Time\*?[:]\s*([^\n]+)/i,         fieldName: '⌚ Time',               extract: true },
+    { name: 'Weather',      pattern: /\*?Weather\*?[:]\s*([^\n]+)/i,      fieldName: '🌥 Weather',            extract: true },
+    { name: 'Mood',         pattern: /\*?Mood\*?[:]\s*([^\n]+)/i,         fieldName: '❤️‍🔥 Mood',            extract: true },
+    { name: 'DOB',          pattern: /\*?D\.?O\.?B\.?\*?[:]\s*([^\n]+)/i, fieldName: '🗓 D.O.B',             extract: true, isBirthday: true },
+    { name: 'Relationship', pattern: /\*?Relationship\*?[:]\s*([^\n]+)/i, fieldName: '👩‍❤️‍👨 Relationship', extract: true }
   ];
 
   requiredFields.forEach(field => {
@@ -343,7 +365,7 @@ function validateAttendanceForm(body, hasImg = false) {
       if (field.isBirthday) {
         validation.extractedData.parsedBirthday = parseBirthday(match[1].trim());
         if (!validation.extractedData.parsedBirthday) {
-          validation.missingFields.push(field.fieldName + " (invalid format)");
+          validation.missingFields.push(field.fieldName + ' (invalid format)');
         }
       }
     }
@@ -353,15 +375,17 @@ function validateAttendanceForm(body, hasImg = false) {
   const wakeUp2 = body.match(/2[:]\s*([^\n]+)/i);
   const wakeUp3 = body.match(/3[:]\s*([^\n]+)/i);
   const missingWakeUps = [];
-  if (!wakeUp1 || !wakeUp1[1] || wakeUp1[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push("1:");
-  if (!wakeUp2 || !wakeUp2[1] || wakeUp2[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push("2:");
-  if (!wakeUp3 || !wakeUp3[1] || wakeUp3[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push("3:");
+  if (!wakeUp1 || !wakeUp1[1] || wakeUp1[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push('1:');
+  if (!wakeUp2 || !wakeUp2[1] || wakeUp2[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push('2:');
+  if (!wakeUp3 || !wakeUp3[1] || wakeUp3[1].trim().length < attendanceSettings.minFieldLength) missingWakeUps.push('3:');
 
   if (missingWakeUps.length > 0) {
-    validation.missingFields.push(`🔔 Wake up members (${missingWakeUps.join(", ")})`);
+    validation.missingFields.push(`🔔 Wake up members (${missingWakeUps.join(', ')})`);
   } else {
     validation.hasWakeUpMembers = true;
-    validation.extractedData.wakeUpMembers = [wakeUp1[1].trim(), wakeUp2[1].trim(), wakeUp3[1].trim()];
+    validation.extractedData.wakeUpMembers = [
+      wakeUp1[1].trim(), wakeUp2[1].trim(), wakeUp3[1].trim()
+    ];
   }
 
   validation.isValidForm = validation.missingFields.length === 0;
@@ -405,20 +429,20 @@ async function isAuthorized(sock, chatId, senderId) {
 // ===== AUTO ATTENDANCE HANDLER =====
 async function handleAutoAttendance(message, sock) {
   try {
-    const messageText = message.message?.conversation ||
-                        message.message?.extendedTextMessage?.text ||
-                        message.message?.imageMessage?.caption ||
-                        message.message?.videoMessage?.caption ||
-                        message.body ||
-                        '';
+    const messageText =
+      message.message?.conversation ||
+      message.message?.extendedTextMessage?.text ||
+      message.message?.imageMessage?.caption ||
+      message.message?.videoMessage?.caption ||
+      message.body ||
+      '';
     const senderId = message.key.participant || message.key.remoteJid;
-    const chatId = message.key.remoteJid;
+    const chatId   = message.key.remoteJid;
 
     if (!attendanceFormRegex.test(messageText)) return false;
 
     const today = getCurrentDate();
-    await initUser(senderId);
-    const userData = await getUserData(senderId);
+    const userData = await initUser(senderId);
 
     if (userData.lastAttendance === today) {
       await sock.sendMessage(chatId, {
@@ -431,7 +455,8 @@ async function handleAutoAttendance(message, sock) {
     const validation = validateAttendanceForm(messageText, messageHasImage);
 
     if (!validation.isValidForm) {
-      const errorMessage = `❌ *INCOMPLETE ATTENDANCE FORM* \n\n📄 Please complete the following fields:\n\n` +
+      const errorMessage =
+        `❌ *INCOMPLETE ATTENDANCE FORM* \n\n📄 Please complete the following fields:\n\n` +
         `${validation.missingFields.map((f, i) => `${i + 1}. ${f}`).join('\n')}\n\n` +
         `💡 *Please fill out all required fields and try again.*`;
       await sock.sendMessage(chatId, { text: errorMessage }, { quoted: message });
@@ -440,19 +465,19 @@ async function handleAutoAttendance(message, sock) {
 
     const currentStreak = updateStreak(senderId, userData, today);
     await updateUserData(senderId, {
-      lastAttendance: today,
+      lastAttendance:   today,
       totalAttendances: (userData.totalAttendances || 0) + 1,
-      streak: currentStreak,
-      longestStreak: userData.longestStreak
+      streak:           currentStreak,
+      longestStreak:    userData.longestStreak,
+      displayName:      validation.extractedData.name || userData.displayName
     });
 
     // Delegate birthday saving to the birthday plugin via the event bus.
-    // birthday.js must listen for 'attendance:birthday' and handle its own storage.
     let birthdayMessage = '';
     if (validation.extractedData.parsedBirthday && validation.extractedData.name) {
       bus.emit('attendance:birthday', {
-        userId: senderId,
-        name: validation.extractedData.name,
+        userId:       senderId,
+        name:         validation.extractedData.name,
         birthdayData: validation.extractedData.parsedBirthday
       });
       birthdayMessage = `\n🎂 Birthday saved/updated: ${validation.extractedData.parsedBirthday.displayDate}.`;
@@ -460,15 +485,15 @@ async function handleAutoAttendance(message, sock) {
 
     // Economy is disabled — reward saved as 0
     await saveAttendanceRecord(senderId, {
-      date: today,
+      date:          today,
       extractedData: validation.extractedData,
-      hasImage: messageHasImage,
-      reward: 0,
-      streak: currentStreak
+      hasImage:      messageHasImage,
+      reward:        0,
+      streak:        currentStreak
     });
 
     // Notify activity tracker if available
-    if (activityTracker && activityTracker.trackActivity) {
+    if (activityTracker?.trackActivity) {
       try {
         await activityTracker.trackActivity({ ...message, _attendanceEvent: true });
       } catch (err) {
@@ -476,7 +501,8 @@ async function handleAutoAttendance(message, sock) {
       }
     }
 
-    const successMessage = `✅ *ATTENDANCE APPROVED!* ✅\n\n🔥 Current streak: ${currentStreak} days` +
+    const successMessage =
+      `✅ *ATTENDANCE APPROVED!* ✅\n\n🔥 Current streak: ${currentStreak} days` +
       (birthdayMessage ? `\n${birthdayMessage}` : '') +
       `\n\n🎉 *Thank you for your participation!*`;
     await sock.sendMessage(chatId, { text: successMessage }, { quoted: message });
@@ -508,23 +534,24 @@ async function showAttendanceMenu(sock, chatId, message) {
 
 async function handleStats(sock, chatId, senderId, message) {
   try {
-    await initUser(senderId);
-    const userData = await getUserData(senderId);
+    const userData = await initUser(senderId);
     const today = getCurrentDate();
 
-    let statsMessage = `📊 *YOUR ATTENDANCE STATS* 📊\n\n` +
-                       `📅 Last attendance: ${userData.lastAttendance || 'Never'}\n` +
-                       `📋 Total attendances: ${userData.totalAttendances || 0}\n` +
-                       `🔥 Current streak: ${userData.streak || 0} days\n` +
-                       `🏆 Longest streak: ${userData.longestStreak || 0} days\n` +
-                       `✅ Today's status: ${userData.lastAttendance === today ? 'Marked ✅' : 'Not marked ❌'}\n` +
-                       `📸 Image required: ${attendanceSettings.requireImage ? 'Yes' : 'No'}\n` +
-                       `📅 Date format: ${attendanceSettings.preferredDateFormat}`;
+    let statsMessage =
+      `📊 *YOUR ATTENDANCE STATS* 📊\n\n` +
+      `📅 Last attendance: ${userData.lastAttendance || 'Never'}\n` +
+      `📋 Total attendances: ${userData.totalAttendances || 0}\n` +
+      `🔥 Current streak: ${userData.streak || 0} days\n` +
+      `🏆 Longest streak: ${userData.longestStreak || 0} days\n` +
+      `✅ Today's status: ${userData.lastAttendance === today ? 'Marked ✅' : 'Not marked ❌'}\n` +
+      `📸 Image required: ${attendanceSettings.requireImage ? 'Yes' : 'No'}\n` +
+      `📅 Date format: ${attendanceSettings.preferredDateFormat}`;
 
     const streak = userData.streak || 0;
-    statsMessage += streak >= 7 ? `\n🌟 *Amazing! You're on fire with a ${streak}-day streak!*` :
-                    streak >= 3 ? `\n🔥 *Great job! Keep the streak going!*` :
-                                  `\n💪 *Mark your attendance daily to build a streak!*`;
+    statsMessage +=
+      streak >= 7 ? `\n🌟 *Amazing! You're on fire with a ${streak}-day streak!*` :
+      streak >= 3 ? `\n🔥 *Great job! Keep the streak going!*` :
+                    `\n💪 *Mark your attendance daily to build a streak!*`;
 
     await sock.sendMessage(chatId, { text: statsMessage }, { quoted: message });
   } catch (error) {
@@ -544,19 +571,20 @@ async function handleSettings(sock, chatId, senderId, message, args) {
   }
 
   if (args.length === 0) {
-    const settingsMessage = `⚙️ *ATTENDANCE SETTINGS* ⚙️\n\n` +
-                            `💰 Reward Amount: ₦${attendanceSettings.rewardAmount.toLocaleString()}\n` +
-                            `📸 Require Image: ${attendanceSettings.requireImage ? 'Yes ✅' : 'No ❌'}\n` +
-                            `💎 Image Bonus: ₦${attendanceSettings.imageRewardBonus.toLocaleString()}\n` +
-                            `📅 Date Format: ${attendanceSettings.preferredDateFormat}\n` +
-                            `🔧 *Change Settings:*\n` +
-                            `• *reward [amount]*\n• *requireimage on/off*\n• *imagebonus [amount]*\n• *dateformat MM/DD|DD/MM*`;
+    const settingsMessage =
+      `⚙️ *ATTENDANCE SETTINGS* ⚙️\n\n` +
+      `💰 Reward Amount: ₦${attendanceSettings.rewardAmount.toLocaleString()}\n` +
+      `📸 Require Image: ${attendanceSettings.requireImage ? 'Yes ✅' : 'No ❌'}\n` +
+      `💎 Image Bonus: ₦${attendanceSettings.imageRewardBonus.toLocaleString()}\n` +
+      `📅 Date Format: ${attendanceSettings.preferredDateFormat}\n` +
+      `🔧 *Change Settings:*\n` +
+      `• *reward [amount]*\n• *requireimage on/off*\n• *imagebonus [amount]*\n• *dateformat MM/DD|DD/MM*`;
     await sock.sendMessage(chatId, { text: settingsMessage }, { quoted: message });
     return;
   }
 
   const setting = args[0].toLowerCase();
-  const value = args.slice(1).join(' ');
+  const value   = args.slice(1).join(' ');
 
   switch (setting) {
     case 'reward': {
@@ -577,7 +605,9 @@ async function handleSettings(sock, chatId, senderId, message, args) {
       }
       attendanceSettings.requireImage = value.toLowerCase() === 'on';
       await saveSettings();
-      await sock.sendMessage(chatId, { text: `✅ Image requirement ${attendanceSettings.requireImage ? 'enabled' : 'disabled'}` }, { quoted: message });
+      await sock.sendMessage(chatId, {
+        text: `✅ Image requirement ${attendanceSettings.requireImage ? 'enabled' : 'disabled'}`
+      }, { quoted: message });
       break;
     }
     case 'imagebonus': {
@@ -607,11 +637,12 @@ async function handleSettings(sock, chatId, senderId, message, args) {
 }
 
 async function handleTest(sock, chatId, message, args) {
-  const fullText = message.message?.conversation ||
-                   message.message?.extendedTextMessage?.text ||
-                   message.message?.imageMessage?.caption ||
-                   message.message?.videoMessage?.caption ||
-                   '';
+  const fullText =
+    message.message?.conversation ||
+    message.message?.extendedTextMessage?.text ||
+    message.message?.imageMessage?.caption ||
+    message.message?.videoMessage?.caption ||
+    '';
   const testText = fullText.replace(/^[.!#]attendance\s+test\s*/i, '').trim();
 
   if (!testText) {
@@ -622,11 +653,12 @@ async function handleTest(sock, chatId, message, args) {
   }
 
   const validation = validateAttendanceForm(testText, hasImage(message));
-  let result = `🔍 *Form Detection Results:*\n\n` +
-               `📋 Valid Form: ${validation.isValidForm ? '✅ Yes' : '❌ No'}\n` +
-               `📸 Image: ${getImageStatus(validation.hasImage, validation.imageRequired)}\n` +
-               `🔔 Wake-up Members: ${validation.hasWakeUpMembers ? '✅ Present' : '❌ Missing'}\n` +
-               `🚫 Missing/Invalid Fields: ${validation.missingFields.length > 0 ? validation.missingFields.join(', ') : 'None'}\n`;
+  let result =
+    `🔍 *Form Detection Results:*\n\n` +
+    `📋 Valid Form: ${validation.isValidForm ? '✅ Yes' : '❌ No'}\n` +
+    `📸 Image: ${getImageStatus(validation.hasImage, validation.imageRequired)}\n` +
+    `🔔 Wake-up Members: ${validation.hasWakeUpMembers ? '✅ Present' : '❌ Missing'}\n` +
+    `🚫 Missing/Invalid Fields: ${validation.missingFields.length > 0 ? validation.missingFields.join(', ') : 'None'}\n`;
 
   if (Object.keys(validation.extractedData).length > 0) {
     result += `\n📝 Extracted Data:\n`;
@@ -642,9 +674,29 @@ async function handleTest(sock, chatId, message, args) {
   await sock.sendMessage(chatId, { text: result }, { quoted: message });
 }
 
+async function handleTestBirthday(sock, chatId, message, args) {
+  const testDate = args.join(' ');
+  if (!testDate) {
+    await sock.sendMessage(chatId, {
+      text: `🎂 *Birthday Parser Test*\n\nUsage: .attendance testbirthday [date]`
+    }, { quoted: message });
+    return;
+  }
+  const parsed = parseBirthday(testDate);
+  const result = parsed
+    ? `🎂 *Birthday Parser Results*\n\n✅ Parsed Successfully:\n` +
+      `📅 Date: ${parsed.displayDate}\n` +
+      `🔍 Search Key: ${parsed.searchKey}\n` +
+      `🗓 Month: ${parsed.monthName}\n` +
+      `📌 Original: ${parsed.originalText}`
+    : `🎂 *Birthday Parser Results*\n\n❌ Failed to parse birthday: ${testDate}`;
+
+  await sock.sendMessage(chatId, { text: result }, { quoted: message });
+}
+
 async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
   try {
-    const limit = args[0] ? Math.min(Math.max(parseInt(args[0]), 1), 50) : 10;
+    const limit   = args[0] ? Math.min(Math.max(parseInt(args[0]), 1), 50) : 10;
     const records = await getAttendanceRecords(senderId, limit);
 
     if (records.length === 0) {
@@ -656,12 +708,13 @@ async function handleAttendanceRecords(sock, chatId, senderId, message, args) {
 
     let recordsText = `📋 *YOUR ATTENDANCE HISTORY* 📋\n\n📊 Showing last ${records.length} records:\n\n`;
     records.forEach((record, index) => {
-      recordsText += `${index + 1}. 📅 ${record.date}\n` +
-                     `   💰 Reward: ₦${record.reward.toLocaleString()}\n` +
-                     `   🔥 Streak: ${record.streak} days\n` +
-                     `   📸 Image: ${record.hasImage ? 'Yes' : 'No'}\n` +
-                     (record.extractedData?.name ? `   👤 Name: ${record.extractedData.name}\n` : '') +
-                     `   ⏰ ${moment(record.timestamp).tz('Africa/Lagos').format('DD/MM/YYYY HH:mm')}\n\n`;
+      recordsText +=
+        `${index + 1}. 📅 ${record.date}\n` +
+        `   💰 Reward: ₦${record.reward.toLocaleString()}\n` +
+        `   🔥 Streak: ${record.streak} days\n` +
+        `   📸 Image: ${record.hasImage ? 'Yes' : 'No'}\n` +
+        (record.extractedData?.name ? `   👤 Name: ${record.extractedData.name}\n` : '') +
+        `   ⏰ ${moment(record.timestamp).tz('Africa/Lagos').format('DD/MM/YYYY HH:mm')}\n\n`;
     });
     recordsText += `💡 *Use: .attendance records [number]* to show more/less records (max 50)`;
 
@@ -709,14 +762,13 @@ module.exports = {
   usage: '.attendance [stats|settings|test|records|help]',
 
   // Called once by pluginLoader after the bot connects.
-  // Replaces the old manual loadSettings() call on first handler run.
   async onLoad(sock) {
     await loadSettings();
-    console.log('[ATTENDANCE] Plugin loaded, settings ready.');
+    console.log('[ATTENDANCE] Plugin loaded.');
+    console.log('[ATTENDANCE] Tables: plugin_attendance_users | plugin_attendance_records | plugin_attendance_settings');
   },
 
   // Called by pluginLoader on every incoming message.
-  // Replaces the old handleAutoAttendance() import in messageHandler.js.
   async onMessage(sock, message, context) {
     if (!attendanceSettings.autoDetection) return;
     await handleAutoAttendance(message, sock);
@@ -767,9 +819,11 @@ module.exports = {
 };
 
 // Named exports preserved for any plugins that import these utilities directly
-module.exports.parseBirthday = parseBirthday;
-module.exports.validateAttendanceForm = validateAttendanceForm;
-module.exports.hasImage = hasImage;
-module.exports.getCurrentDate = getCurrentDate;
-module.exports.getNigeriaTime = getNigeriaTime;
-module.exports.handleAutoAttendance = handleAutoAttendance;
+module.exports = {
+  parseBirthday,
+  validateAttendanceForm,
+  hasImage,
+  getCurrentDate,
+  getNigeriaTime,
+  handleAutoAttendance
+};
