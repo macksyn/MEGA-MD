@@ -609,7 +609,7 @@ async function handleBirthdayCommand(sock, message, args, context) {
         chatId,
         {
           text: `❓ Unknown birthday command: *${sub}*\n\nUse *.birthday help* to see available commands.`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -653,7 +653,7 @@ async function handleMyBirthday(sock, message, senderId, chatId, channelInfo) {
       chatId,
       {
         text: `🎂 *No Birthday Recorded*\n\nYour birthday hasn't been saved yet.\n\n💡 It is saved automatically when you submit an attendance form with your D.O.B.`,
-        ...channelInfo,
+        //...channelInfo,
       },
       { quoted: message },
     );
@@ -694,7 +694,7 @@ async function handleToday(sock, message, chatId, channelInfo) {
       chatId,
       {
         text: `🎂 *No birthdays today*\n\n📅 Check upcoming: *.birthday upcoming*`,
-        ...channelInfo,
+        //...channelInfo,
       },
       { quoted: message },
     );
@@ -722,7 +722,7 @@ async function handleUpcoming(sock, message, chatId, args, channelInfo) {
       chatId,
       {
         text: "⚠️ Please provide a valid number of days (1-365)",
-        ...channelInfo,
+        //...channelInfo,
       },
       { quoted: message },
     );
@@ -929,7 +929,7 @@ async function handleTest(
     chatId,
     {
       text: `🧪 Testing birthday wish for *${targetName}*...\n\nSending in 3 seconds...`,
-      ...channelInfo,
+      //...channelInfo,
     },
     { quoted: message },
   );
@@ -976,7 +976,7 @@ async function handleTest(
             `• *reminders [days]* - Force reminders for specific days\n` +
             `• *cleanup* - Force cleanup\n\n` +
             `Usage: *.birthday force [command]*`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -1064,7 +1064,7 @@ async function handleSettings(
       chatId,
       {
         text: "🚫 Only admins (or owner/sudo) can modify birthday settings.",
-        ...channelInfo,
+        //...channelInfo,
       },
       { quoted: message },
     );
@@ -1082,7 +1082,7 @@ async function handleSettings(
         chatId,
         {
           text: `✅ Reminders *${birthdaySettings.enableReminders ? "enabled" : "disabled"}*!`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -1093,7 +1093,7 @@ async function handleSettings(
         chatId,
         {
           text: `✅ Auto wishes *${birthdaySettings.enableAutoWishes ? "enabled" : "disabled"}*!`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -1104,7 +1104,7 @@ async function handleSettings(
         chatId,
         {
           text: `✅ Group reminders *${birthdaySettings.enableGroupReminders ? "enabled" : "disabled"}*!`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -1115,7 +1115,7 @@ async function handleSettings(
         chatId,
         {
           text: `✅ Private reminders *${birthdaySettings.enablePrivateReminders ? "enabled" : "disabled"}*!`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -1159,7 +1159,7 @@ async function handleSettings(
           chatId,
           {
             text: "⚠️ Invalid days. Use comma-separated numbers, e.g. *7,3,1*",
-            ...channelInfo,
+            //...channelInfo,
           },
           { quoted: message },
         );
@@ -1170,7 +1170,7 @@ async function handleSettings(
         chatId,
         {
           text: `✅ Reminder days set to *${days.join(", ")}*!`,
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
@@ -1237,7 +1237,7 @@ async function handleGroups(
       chatId,
       {
         text: "🚫 Only admins (or owner/sudo) can manage birthday groups.",
-        ...channelInfo,
+        //...channelInfo,
       },
       { quoted: message },
     );
@@ -1252,7 +1252,7 @@ async function handleGroups(
         chatId,
         {
           text: "⚠️ Run this command *inside the group* you want to add.",
-          ...channelInfo,
+          //...channelInfo,
         },
         { quoted: message },
       );
