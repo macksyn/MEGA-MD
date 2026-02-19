@@ -50,8 +50,8 @@ const API_ENDPOINTS = [
         parse: (d) => d?.result
     },
     {
-        name:  'GPT-5',
-        url:   (t) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(t)}`,
+        name:  'Deep Thinking',
+        url:   (t) => `https://malvin-api.vercel.app/ai/copilot-think?text=${encodeURIComponent(t)}`,
         parse: (d) => d?.reply
     },
     {
