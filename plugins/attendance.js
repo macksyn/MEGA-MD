@@ -819,18 +819,9 @@ module.exports = {
 };
 
 // ===== EXPORT UTILITIES (for other plugins) =====
-module.exports = {
-  parseBirthday,
-  validateAttendanceForm,
-  hasImage,
-  getCurrentDate,
-  getNigeriaTime,
-  handleAutoAttendance
-};
-// Named exports preserved for any plugins that import these utilities directly
-/* module.exports.parseBirthday        = parseBirthday;
+module.exports.parseBirthday        = parseBirthday;
 module.exports.validateAttendanceForm = validateAttendanceForm;
 module.exports.hasImage             = hasImage;
 module.exports.getCurrentDate       = getCurrentDate;
 module.exports.getNigeriaTime       = getNigeriaTime;
-module.exports.handleAutoAttendance = handleAutoAttendance;*/
+module.exports.handleAutoAttendance = handleAutoAttendance;
