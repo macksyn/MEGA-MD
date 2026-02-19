@@ -641,7 +641,7 @@ async function showBirthdayMenu(sock, message, chatId, channelInfo) {
     `🌍 Timezone: Africa/Lagos (WAT)`;
   await sock.sendMessage(
     chatId,
-    { text: menu, ...channelInfo },
+    { text: menu, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -682,7 +682,7 @@ async function handleMyBirthday(sock, message, senderId, chatId, channelInfo) {
 
   await sock.sendMessage(
     chatId,
-    { text: msg, ...channelInfo },
+    { text: msg, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -710,7 +710,7 @@ async function handleToday(sock, message, chatId, channelInfo) {
   msg += `\n🎊 *Let's wish them a happy birthday!* 🎊`;
   await sock.sendMessage(
     chatId,
-    { text: msg, mentions, ...channelInfo },
+    { text: msg, mentions, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -744,7 +744,7 @@ async function handleUpcoming(sock, message, chatId, args, channelInfo) {
   if (upcomingList.length === 0) {
     return sock.sendMessage(
       chatId,
-      { text: `📅 *No birthdays in the next ${days} days*`, ...channelInfo },
+      { text: `📅 *No birthdays in the next ${days} days*`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -766,7 +766,7 @@ async function handleUpcoming(sock, message, chatId, args, channelInfo) {
   });
   await sock.sendMessage(
     chatId,
-    { text: msg, mentions, ...channelInfo },
+    { text: msg, mentions, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -782,7 +782,7 @@ async function handleThisMonth(sock, message, chatId, channelInfo) {
   if (list.length === 0) {
     return sock.sendMessage(
       chatId,
-      { text: `📅 *No birthdays in ${monthName}*`, ...channelInfo },
+      { text: `📅 *No birthdays in ${monthName}*`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -799,7 +799,7 @@ async function handleThisMonth(sock, message, chatId, channelInfo) {
   });
   await sock.sendMessage(
     chatId,
-    { text: msg, mentions, ...channelInfo },
+    { text: msg, mentions, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -816,7 +816,7 @@ async function handleAll(sock, message, chatId, senderId, channelInfo) {
   if (!isOwner && !isSenderAdmin) {
     return sock.sendMessage(
       chatId,
-      { text: "🚫 Only admins can view all birthdays.", ...channelInfo },
+      { text: "🚫 Only admins can view all birthdays.", /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -829,7 +829,7 @@ async function handleAll(sock, message, chatId, senderId, channelInfo) {
   if (list.length === 0) {
     return sock.sendMessage(
       chatId,
-      { text: `🎂 *No birthdays recorded yet*`, ...channelInfo },
+      { text: `🎂 *No birthdays recorded yet*`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -848,7 +848,7 @@ async function handleAll(sock, message, chatId, senderId, channelInfo) {
   });
   await sock.sendMessage(
     chatId,
-    { text: msg, mentions, ...channelInfo },
+    { text: msg, mentions, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -878,7 +878,7 @@ async function handleStatus(sock, message, chatId, channelInfo) {
   msg += `• Groups: ${birthdaySettings.reminderGroups.length}`;
   await sock.sendMessage(
     chatId,
-    { text: msg, ...channelInfo },
+    { text: msg, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -902,14 +902,14 @@ async function handleTest(
   if (!isOwner && !isSenderAdmin) {
     return sock.sendMessage(
       chatId,
-      { text: "🚫 Only admins can test birthday wishes.", ...channelInfo },
+      { text: "🚫 Only admins can test birthday wishes.", /*...channelInfo*/ },
       { quoted: message },
     );
   }
   if (!isGroup) {
     return sock.sendMessage(
       chatId,
-      { text: "⚠️ This command must be used in a group.", ...channelInfo },
+      { text: "⚠️ This command must be used in a group.", /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -961,7 +961,7 @@ async function handleTest(
     if (!isOwner && !isSenderAdmin) {
       return sock.sendMessage(
         chatId,
-        { text: "🚫 Only admins (or owner/sudo) can force birthday tasks.", ...channelInfo },
+        { text: "🚫 Only admins (or owner/sudo) can force birthday tasks.", /*...channelInfo*/ },
         { quoted: message },
       );
     }
@@ -987,14 +987,14 @@ async function handleTest(
   if (type === "wishes") {
     await sock.sendMessage(
       chatId,
-      { text: "🔧 Forcing birthday wishes...", ...channelInfo },
+      { text: "🔧 Forcing birthday wishes...", /*...channelInfo*/ },
       { quoted: message },
     );
     delete lastSchedulerRun[`wishes_${today}`];
     await runBirthdayWishes(sock);
     return sock.sendMessage(
       chatId,
-      { text: "✅ Forced birthday wishes completed!", ...channelInfo },
+      { text: "✅ Forced birthday wishes completed!", /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -1003,38 +1003,38 @@ async function handleTest(
     if (isNaN(days))
       return sock.sendMessage(
         chatId,
-        { text: "❌ Invalid days parameter", ...channelInfo },
+        { text: "❌ Invalid days parameter", /*...channelInfo*/ },
         { quoted: message },
       );
     await sock.sendMessage(
       chatId,
-      { text: `🔧 Forcing ${days}-day reminders...`, ...channelInfo },
+      { text: `🔧 Forcing ${days}-day reminders...`, /*...channelInfo*/ },
       { quoted: message },
     );
     delete lastSchedulerRun[`reminder_${days}_${today}`];
     await runBirthdayReminders(sock, days);
     return sock.sendMessage(
       chatId,
-      { text: `✅ Forced ${days}-day reminders completed!`, ...channelInfo },
+      { text: `✅ Forced ${days}-day reminders completed!`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
   if (type === "cleanup") {
     await sock.sendMessage(
       chatId,
-      { text: "🔧 Running cleanup...", ...channelInfo },
+      { text: "🔧 Running cleanup...", /*...channelInfo*/ },
       { quoted: message },
     );
     await runCleanup();
     return sock.sendMessage(
       chatId,
-      { text: "✅ Cleanup completed!", ...channelInfo },
+      { text: "✅ Cleanup completed!", /*...channelInfo*/ },
       { quoted: message },
     );
   }
   return sock.sendMessage(
     chatId,
-    { text: `❓ Unknown force command: *${type}*`, ...channelInfo },
+    { text: `❓ Unknown force command: *${type}*`, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -1123,7 +1123,7 @@ async function handleSettings(
       if (!/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value)) {
         return sock.sendMessage(
           chatId,
-          { text: "⚠️ Invalid time format. Use HH:MM", ...channelInfo },
+          { text: "⚠️ Invalid time format. Use HH:MM", /*...channelInfo*/ },
           { quoted: message },
         );
       }
@@ -1131,14 +1131,14 @@ async function handleSettings(
       await saveSettings();
       return sock.sendMessage(
         chatId,
-        { text: `✅ Wish time set to *${value}*!`, ...channelInfo },
+        { text: `✅ Wish time set to *${value}*!`, /*...channelInfo*/ },
         { quoted: message },
       );
     case "remindertime":
       if (!/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value)) {
         return sock.sendMessage(
           chatId,
-          { text: "⚠️ Invalid time format. Use HH:MM", ...channelInfo },
+          { text: "⚠️ Invalid time format. Use HH:MM", /*...channelInfo*/ },
           { quoted: message },
         );
       }
@@ -1146,7 +1146,7 @@ async function handleSettings(
       await saveSettings();
       return sock.sendMessage(
         chatId,
-        { text: `✅ Reminder time set to *${value}*!`, ...channelInfo },
+        { text: `✅ Reminder time set to *${value}*!`, /*...channelInfo*/ },
         { quoted: message },
       );
     case "reminderdays": {
@@ -1179,13 +1179,13 @@ async function handleSettings(
       await loadSettings();
       return sock.sendMessage(
         chatId,
-        { text: "✅ Birthday settings reloaded!", ...channelInfo },
+        { text: "✅ Birthday settings reloaded!", /*...channelInfo*/ },
         { quoted: message },
       );
     default:
       return sock.sendMessage(
         chatId,
-        { text: `❓ Unknown setting: *${setting}*`, ...channelInfo },
+        { text: `❓ Unknown setting: *${setting}*`, /*...channelInfo*/ },
         { quoted: message },
       );
   }
@@ -1209,7 +1209,7 @@ async function showSettingsMenu(sock, message, chatId, channelInfo) {
   msg += `• *.birthday settings reminderdays 7,3,1*\n• *.birthday settings reload*`;
   await sock.sendMessage(
     chatId,
-    { text: msg, ...channelInfo },
+    { text: msg, /*...channelInfo*/ },
     { quoted: message },
   );
 }
@@ -1259,14 +1259,14 @@ async function handleGroups(
     if (birthdaySettings.reminderGroups.includes(chatId))
       return sock.sendMessage(
         chatId,
-        { text: "⚠️ This group is already added.", ...channelInfo },
+        { text: "⚠️ This group is already added.", /*...channelInfo*/ },
         { quoted: message },
       );
     birthdaySettings.reminderGroups.push(chatId);
     await saveSettings();
     return sock.sendMessage(
       chatId,
-      { text: `✅ Group added for birthday reminders!`, ...channelInfo },
+      { text: `✅ Group added for birthday reminders!`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -1275,7 +1275,7 @@ async function handleGroups(
     if (!groupArg)
       return sock.sendMessage(
         chatId,
-        { text: "⚠️ Specify a group ID to remove.", ...channelInfo },
+        { text: "⚠️ Specify a group ID to remove.", /*...channelInfo*/ },
         { quoted: message },
       );
     const idx = birthdaySettings.reminderGroups.findIndex((g) =>
@@ -1284,14 +1284,14 @@ async function handleGroups(
     if (idx === -1)
       return sock.sendMessage(
         chatId,
-        { text: `⚠️ Group not found: *${groupArg}*`, ...channelInfo },
+        { text: `⚠️ Group not found: *${groupArg}*`, /*...channelInfo*/ },
         { quoted: message },
       );
     birthdaySettings.reminderGroups.splice(idx, 1);
     await saveSettings();
     return sock.sendMessage(
       chatId,
-      { text: `✅ Group removed from birthday reminders!`, ...channelInfo },
+      { text: `✅ Group removed from birthday reminders!`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -1300,14 +1300,14 @@ async function handleGroups(
     if (count === 0)
       return sock.sendMessage(
         chatId,
-        { text: "📝 No groups are currently configured.", ...channelInfo },
+        { text: "📝 No groups are currently configured.", /*...channelInfo*/ },
         { quoted: message },
       );
     birthdaySettings.reminderGroups = [];
     await saveSettings();
     return sock.sendMessage(
       chatId,
-      { text: `✅ Cleared all *${count}* group(s)!`, ...channelInfo },
+      { text: `✅ Cleared all *${count}* group(s)!`, /*...channelInfo*/ },
       { quoted: message },
     );
   }
@@ -1328,7 +1328,7 @@ async function showGroups(sock, message, chatId, channelInfo) {
   msg += `🔧 *Commands:*\n• *.birthday groups add* — Add current group\n• *.birthday groups remove [groupId]* — Remove\n• *.birthday groups clear* — Remove all`;
   await sock.sendMessage(
     chatId,
-    { text: msg, ...channelInfo },
+    { text: msg, /*...channelInfo*/ },
     { quoted: message },
   );
 }
