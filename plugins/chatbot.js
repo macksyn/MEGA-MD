@@ -51,8 +51,8 @@ const API_ENDPOINTS = [
     },
     {
         name:  'Deep Thinking',
-        url:   (t) => `https://malvin-api.vercel.app/ai/copilot-think?text=${encodeURIComponent(t)}`,
-        parse: (d) => d?.reply
+        url:   (t) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(t)}`,
+        parse: (d) => d?.result
     },
     {
         name:  'SparkAPI',
