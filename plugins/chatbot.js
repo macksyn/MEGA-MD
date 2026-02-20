@@ -12,7 +12,7 @@
  *
  * Lifecycle hooks (pluginLoader):
  *   onLoad    → restore enabled groups from DB, warm known user caches
- *   onMessage → intercept group messages, handle chatbot responses
+ *   onMessage → intercept group messages, handle chatbot responses pergectly
  *   schedules → persist in-memory data to DB every 10 minutes or more
  */
 
@@ -52,7 +52,7 @@ const API_ENDPOINTS = [
     {
         name:  'GPT-5',
         url:   (t) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(t)}`,
-        parse: (d) => d?.reply
+        parse: (d) => d?.result
     },
     {
         name:  'SparkAPI',
