@@ -50,10 +50,9 @@ const API_ENDPOINTS = [
         parse: (d) => d?.result
     },
     {
-        name:  'Deep Thinking',
+        name:  'GPT-5',
         url:   (t) => `https://malvin-api.vercel.app/ai/gpt-5?text=${encodeURIComponent(t)}`,
-        parse: (d) => d?.result
-        maxPromptLength: 1500 // trim prompt for this api
+        parse: (d) => d?.reply
     },
     {
         name:  'SparkAPI',
@@ -324,15 +323,7 @@ async function getAIResponse(userMessage, senderId) {
 
     for (const api of API_ENDPOINTS) {
         const controller = new AbortController();
-        const timeoutId  = setTimeout(() => controller.abort(), 15000); // give Copilot more time — it's a thinking model
-        
-        // Trim prompt if this API has a length limit
-    const finalPrompt = api.maxPromptLength && prompt.length > api.maxPromptLength
-        ? prompt.substring(0, api.maxPromptLength).trim()
-        : prompt;
-
-    try {
-        const res = await fetch(api.url(finalPrompt), }
+        const timeoutId  = setTimeout(() => controller.abort(), 10000);
 
         try {
             console.log(`[AI] Trying ${api.name}...`);
