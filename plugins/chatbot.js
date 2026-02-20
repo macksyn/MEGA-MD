@@ -13,7 +13,7 @@
  * Lifecycle hooks (pluginLoader):
  *   onLoad    → restore enabled groups from DB, warm known user caches
  *   onMessage → intercept group messages, handle chatbot responses
- *   schedules → persist in-memory data to DB every 10 minutes
+ *   schedules → persist in-memory data to DB every 10 minutes or more
  */
 
 const fetch = require('node-fetch');
