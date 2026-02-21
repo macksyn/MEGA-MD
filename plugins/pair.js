@@ -47,30 +47,26 @@ module.exports = {
         timeout: 60000
       });
 
-      if (response.data && response.data.code) {
-        const code = response.data?.trim();
+      // Server returns plain text like "853F-XWTE", not a JSON object
+      const pairingCode = (response.data || '').toString().trim();
 
-        if (pairingCode.includes("Unavailable") || pairingCode.includes("Error")) {
-          throw new Error("Server is busy");
-        }
-
-        const successText = `✅ *GROQ PAIRING CODE*\n\n` +
-                            `Code: *${pairingCode}*\n\n` +
-                            `*How to use:*\n` +
-                            `1. Open WhatsApp Settings\n` +
-                            `2. Tap 'Linked Devices'\n` +
-                            `3. Tap 'Link a Device'\n` +
-                            `4. Select 'Link with phone number instead'\n` +
-                            `5. Enter the code above.`;
-
-        await sock.sendMessage(chatId, {
-          text: successText,
-          contextInfo: forwardInfo
-        }, { quoted: message });
-
-      } else {
-        throw new Error("Invalid response format");
+      if (!pairingCode || pairingCode.toLowerCase().includes('unavailable') || pairingCode.toLowerCase().includes('error')) {
+        throw new Error("Server is busy or returned an invalid code");
       }
+
+      const successText = `✅ *GROQ PAIRING CODE*\n\n` +
+                          `Code: *${pairingCode}*\n\n` +
+                          `*How to use:*\n` +
+                          `1. Open WhatsApp Settings\n` +
+                          `2. Tap 'Linked Devices'\n` +
+                          `3. Tap 'Link a Device'\n` +
+                          `4. Select 'Link with phone number instead'\n` +
+                          `5. Enter the code above.`;
+
+      await sock.sendMessage(chatId, {
+        text: successText,
+        contextInfo: forwardInfo
+      }, { quoted: message });
 
     } catch (error) {
       console.error('Pairing Plugin Error:', error.message);
@@ -81,7 +77,7 @@ module.exports = {
       } else if (error.response?.status === 400) {
         errorMsg += "Invalid phone number format.";
       } else {
-        errorMsg += "The server is currently offline or busy. Try again later.";
+        errorMsg += error.message || "The server is currently offline or busy. Try again later.";
       }
 
       await sock.sendMessage(chatId, {
