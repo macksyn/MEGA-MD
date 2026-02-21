@@ -43,7 +43,7 @@ module.exports = {
     }, { quoted: message });
 
     try {
-      const response = await axios.get(`https://megapair-yttf.onrender.com/pair?number=${number}`, {
+      const response = await axios.get(`https://megapair-yttf.onrender.com/botcode?number=${number}`, {
         timeout: 60000
       });
 
