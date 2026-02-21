@@ -48,7 +48,7 @@ module.exports = {
       });
 
       if (response.data && response.data.code) {
-        const pairingCode = response.data.code;
+        const code = response.data?.trim();
 
         if (pairingCode.includes("Unavailable") || pairingCode.includes("Error")) {
           throw new Error("Server is busy");
