@@ -38,7 +38,7 @@ module.exports = {
     }
 
     await sock.sendMessage(chatId, {
-      text: "⚡ *Requesting pairing code from server...*\n_This may take up to 60 seconds if the server is waking up._",
+      text: "⚡ *Requesting code from server...*",
       contextInfo: forwardInfo
     }, { quoted: message });
 
@@ -47,30 +47,30 @@ module.exports = {
         timeout: 60000
       });
 
-      // Server returns { returncode, stdout, stderr }
-      const pairingCode = response.data?.code || response.data?.stdout?.trim();
+      if (response.data && response.data.code) {
+        const pairingCode = response.data.code;
 
-      if (!pairingCode) {
-        throw new Error("Server returned empty response. It may still be waking up — try again in 30 seconds.");
+        if (pairingCode.includes("Unavailable") || pairingCode.includes("Error")) {
+          throw new Error("Server is busy");
+        }
+
+        const successText = `✅ *GROQ PAIRING CODE*\n\n` +
+                            `Code: *${pairingCode}*\n\n` +
+                            `*How to use:*\n` +
+                            `1. Open WhatsApp Settings\n` +
+                            `2. Tap 'Linked Devices'\n` +
+                            `3. Tap 'Link a Device'\n` +
+                            `4. Select 'Link with phone number instead'\n` +
+                            `5. Enter the code above.`;
+
+        await sock.sendMessage(chatId, {
+          text: successText,
+          contextInfo: forwardInfo
+        }, { quoted: message });
+
+      } else {
+        throw new Error("Invalid response format");
       }
-
-      if (pairingCode.includes("Unavailable") || pairingCode.includes("Error")) {
-        throw new Error("Server is busy");
-      }
-
-      const successText = `✅ *GROQ PAIRING CODE*\n\n` +
-                          `Code: *${pairingCode}*\n\n` +
-                          `*How to use:*\n` +
-                          `1. Open WhatsApp Settings\n` +
-                          `2. Tap 'Linked Devices'\n` +
-                          `3. Tap 'Link a Device'\n` +
-                          `4. Select 'Link with phone number instead'\n` +
-                          `5. Enter the code above.`;
-
-      await sock.sendMessage(chatId, {
-        text: successText,
-        contextInfo: forwardInfo
-      }, { quoted: message });
 
     } catch (error) {
       console.error('Pairing Plugin Error:', error.message);
@@ -81,7 +81,7 @@ module.exports = {
       } else if (error.response?.status === 400) {
         errorMsg += "Invalid phone number format.";
       } else {
-        errorMsg += error.message || "The server is currently offline or busy. Try again later.";
+        errorMsg += "The server is currently offline or busy. Try again later.";
       }
 
       await sock.sendMessage(chatId, {
