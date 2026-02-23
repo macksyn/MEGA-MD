@@ -304,8 +304,8 @@ function updateMemory(senderId, userMessage, botReply = null) {
     memory.history.set(senderId, hist);
 
     const existing = memory.profiles.get(senderId) || {};
-    const explicit = extractExplicitInfo(message);
-    const passive  = detectPassiveSignals(message);
+    const explicit = extractExplicitInfo(userMessage);
+    const passive  = detectPassiveSignals(userMessage);
 
     const updated = mergeProfile(existing, {
         ...explicit,
@@ -537,7 +537,9 @@ async function getAIResponse(userMessage, senderId) {
            continue;  // try the next API
           }
 
-            if (!result || typeof result !== 'string' || !result.trim()) {
+          const cleaned = cleanResponse(result);
+
+            if (!isGoodResponse(cleaned, userMessage)) {
                 apiFailures[api.name].count++;
                 apiFailures[api.name].lastFailAt = Date.now();
                 console.warn(`[AI] ${api.name} failed quality gate after cleaning`);
@@ -548,7 +550,7 @@ async function getAIResponse(userMessage, senderId) {
             apiFailures[api.name].count = 0;
             console.log(`[AI] ✅ ${api.name} OK`);
 
-            return cleanResponse(result);
+            return cleaned;
 
         } catch (err) {
             clearTimeout(timeoutId);
@@ -686,7 +688,6 @@ async function handleChatbotMessage(sock, message, context) {
 
     try {
         await warmUserCache(senderId);
-        updateMemory(senderId, cleanedMessage);
         await sock.readMessages([message.key]);
 
         // Build the response first, then type for a duration proportional to its length

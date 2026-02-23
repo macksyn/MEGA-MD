@@ -88,7 +88,7 @@ module.exports = {
             {
               video: { url },
               mimetype: 'video/mp4',
-              caption: '📥 *Downloaded by MEGA-MD*'
+              caption: '📥 _GROQ AI©_'
             },
             { quoted: message }
           );
