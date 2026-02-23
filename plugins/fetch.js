@@ -3,7 +3,7 @@ const { fromBuffer } = require('file-type')
 
 module.exports = {
   command: 'fetch',
-  aliases: ['get', 'download'],
+  aliases: ['get'],
   category: 'tools',
   description: 'Download a file directly from a URL',
   usage: '.fetch <url>',
