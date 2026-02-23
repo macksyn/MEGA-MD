@@ -1,7 +1,8 @@
 {
   "name": "hedra",
   "version": "1.0.0",
-  "description": "WhatsApp Bot",
+  "description": "High performance multi-device whatsapp bot",
+  "type": "commonjs",
   "main": "index.js",
   "directories": {
     "lib": "lib",
@@ -22,16 +23,8 @@
     "install:force": "npm install --force",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [
-    "termux-whatsapp-bot",
-    "whatsapp-bot",
-    "whatsapp-api",
-    "baileys-bot",
-    "whatsApp",
-    "hedra-bot",
-    "hedra-md",
-    "multi-device",
-    "hedraai"
+  "keywords": [ "termux-whatsapp-bot", "whatsapp-bot", "whatsapp-api",
+    "baileys-bot", "whatsApp", "mega-bot", "mega-md", "multi-device", "mega-ai"
   ],
   "homepage": "https://github.com/macksyn/HEDRA-AI",
   "repository": {
@@ -48,7 +41,7 @@
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "acrcloud": "^1.4.0",
-    "api-qasim": "^3.2.10",
+    "api-qasim": "^4.0.1",
     "awesome-phonenumber": "^5.9.0",
     "axios": "^1.8.4",
     "better-sqlite3": "^12.5.0",
@@ -89,6 +82,8 @@
     "ytdl-core": "^4.11.5"
   },
   "overrides": {
+    "minimatch": "^10.2.1",
+    "yargs-parser": "^21.1.1",
     "wa-sticker-formatter": {
       "sharp": "$sharp",
       "axios": "$axios",

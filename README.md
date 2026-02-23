@@ -183,7 +183,7 @@ It is lightweight and can be easily customized to add more commands as per your 
 
 ## Self Hosting Guide
 
-### Deploye in Termux/Ubuntu
+### Deploy in Termux/Ubuntu
    
 ```
 pkg update && pkg upgrade -y && pkg install proot-distro -y
@@ -195,7 +195,7 @@ proot-distro install ubuntu
 proot-distro login ubuntu
 ```
 ```
-apt update && apt upgrade -y && apt install -y git ffmpeg build-essential libvips-dev curl webp nodejs npm
+apt update && apt upgrade -y && apt install -y git ffmpeg build-essential libvips-dev webp nodejs npm
 ```
 ```
 git clone https://github.com/<your gitHub Username>/MEGA-MD
@@ -205,9 +205,6 @@ cd MEGA-MD
 npm install && npm start
 ```
 ---
-
-- Note if npm throws error just exit from ubuntu terminal and login again then `cd MEGA-MD && npm install`
-
 
 ## License
 
@@ -233,10 +230,6 @@ If you like this project, please give it a [⭐️ star on GitHub](https://githu
 | [Qasim Ali](https://github.com/GlobalTechInfo) |[WhiskeySockets](https://github.com/WhiskeySockets) |
 
 ---
-
-## Important Warning
-
-**Note:** This bot is created for educational purposes only. This is NOT an official WhatsApp bot. Using this bot may lead to your WhatsApp account being banned. Use it at your own risk. The developers will not be responsible for any consequences or account bans that may occur while using this bot.
 
 ## Legal Notice
 
