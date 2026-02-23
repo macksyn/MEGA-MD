@@ -418,14 +418,6 @@ module.exports = {
   category: 'utility',
   description: 'Tracks per-type activity (messages, stickers, photos …) in enabled groups',
 
-  // ─── THIS is what gets called for every group message ───────────────────
-  // onMessage fires for ALL messages (same as attendance.js auto-detection).
-  // handler only fires when the command router matches a command — wrong hook
-  // for background tracking.
-  async onMessage(sock, message, context) {
-    await trackActivity(message);
-  },
-
   // ── Exported API for activity.js ──
   isGroupEnabled,
   enableGroupTracking,
