@@ -1,7 +1,7 @@
 const axios = require('axios');
 
 module.exports = {
-  command: 'play',
+  command: 'song',
   aliases: ['plays', 'music'],
   category: 'music',
   description: 'Search and download a song as MP3 from Spotify',
