@@ -484,8 +484,7 @@ async function startQasimDev() {
                     
                     await QasimDev.sendMessage(botNumber, {
                         text: `🤖 Bot Connected Successfully!\n\n⏰ Time: ${new Date().toLocaleString()}\n✅ Status: Online and Ready!${ghostStatus}\n\n✅Make sure to join below channel`,
-                          contextInfo: {}
-                        /*contextInfo: {
+                        contextInfo: {
                             forwardingScore: 1,
                             isForwarded: true,
                             forwardedNewsletterMessageInfo: {
@@ -493,7 +492,7 @@ async function startQasimDev() {
                                 newsletterName: 'Groq',
                                 serverMessageId: -1
                             }
-                        } */
+                        }
                     });
                 } catch (error) {
                     printLog('error', `Failed to send connection message: ${error.message}`);
