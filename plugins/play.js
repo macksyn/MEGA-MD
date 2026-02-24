@@ -62,7 +62,7 @@ module.exports = {
       }, { quoted: message });
 
       // Search for the song with retry logic
-      const searchUrl = `https://api.qasimdev.dpdns.org/api/spotify/search?apiKey=qasim-dev&query=${encodeURIComponent(searchQuery)}`;
+      const searchUrl = `https://api.qasimdev.dpdns.org/api/loaderto/download?apiKey=qasim-dev&format=mp3&url=${encodeURIComponent(searchQuery)}`;
       const searchResponse = await apiCallWithRetry(searchUrl);
       
       if (!searchResponse.data?.success || !searchResponse.data?.data?.tracks || searchResponse.data.data.tracks.length === 0) {
