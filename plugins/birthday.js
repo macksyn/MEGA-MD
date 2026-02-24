@@ -68,8 +68,8 @@ const MONTH_MAP = {
 
 // ==================== NEW STORAGE (identical pattern as attendance.js) ====================
 const db = createStore('birthdays');
+const dbBirthdays    = db;
 const dbSettings     = db.table('settings');
-const dbBirthdays    = db.table('birthdays');
 const dbWishesLog    = db.table('wishes_log');
 const dbRemindersLog = db.table('reminders_log');
 
@@ -79,6 +79,7 @@ let cronJobs = new Map();
 let lastSchedulerRun = {};
 
 // ==================== STORAGE FUNCTIONS ====================
+
 async function loadSettings() {
   try {
     const saved = await dbSettings.get('config');
@@ -103,77 +104,149 @@ async function saveSettings() {
   }
 }
 
+/**
+ * Returns every birthday record as { [userId]: contactDoc }.
+ * Each contactDoc is a per-user document (not the old single "all" blob).
+ */
 async function getAllBirthdays() {
   try {
-    return await dbBirthdays.get('all') || {};
+    // pluginStore.getAll() returns { key: value } — keys are userIds
+    return await dbBirthdays.getAll();
   } catch (e) {
     printLog('error', `[BIRTHDAY] getAllBirthdays error: ${e.message}`);
     return {};
   }
 }
 
+/**
+ * Get a single contact's birthday document.
+ */
+async function getBirthdayData(userId) {
+  try {
+    return await dbBirthdays.get(userId);
+  } catch (e) {
+    printLog('error', `[BIRTHDAY] getBirthdayData error: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Save (or update) a birthday, tracking every change in updateHistory.
+ *
+ * History entry types mirror the old plugin exactly:
+ *   'initial'        — first time this contact is saved
+ *   'name_update'    — name or birthday text changed, date is the same
+ *   'birthday_change'— actual day/month (searchKey) changed
+ *
+ * @param {string} userId
+ * @param {string} name                        — display name (may include * prefix)
+ * @param {string|object} dobStringOrParsed    — raw DOB string or already-parsed object
+ * @returns {boolean} true on success
+ */
 async function saveBirthdayData(userId, name, dobStringOrParsed) {
   try {
+    // ── 1. Resolve the birthday object ──────────────────────────────────────
     let parsed;
     if (typeof dobStringOrParsed === 'string') {
       parsed = parseDOB(dobStringOrParsed);
     } else {
-      parsed = dobStringOrParsed;   // already parsed from attendance bus
+      parsed = dobStringOrParsed; // already parsed by attendance plugin
     }
+
     if (!parsed) {
       printLog('warning', `[BIRTHDAY] Could not parse DOB for ${name}`);
       return false;
     }
-    const birthdays = await getAllBirthdays();
-    birthdays[userId] = { userId, name, birthday: parsed, lastUpdated: new Date().toISOString() };
-    await dbBirthdays.set('all', birthdays);
-    printLog('success', `[BIRTHDAY] 🎂 Birthday saved for ${name} (${parsed.displayDate})`);
+
+    const now       = new Date().toISOString();
+    const existing  = await dbBirthdays.get(userId);
+
+    // ── 2. Build the history entry ───────────────────────────────────────────
+    let historyEntry;
+
+    if (!existing) {
+      // First save for this contact
+      historyEntry = {
+        type:      'initial',
+        name,
+        birthday:  parsed,
+        timestamp: now
+      };
+    } else {
+      const prevBirthday = existing.birthday || {};
+      const dateChanged  = prevBirthday.searchKey !== parsed.searchKey;
+
+      historyEntry = {
+        type:            dateChanged ? 'birthday_change' : 'name_update',
+        previousName:    existing.name,
+        previousBirthday: prevBirthday,
+        newName:         name,
+        newBirthday:     parsed,
+        timestamp:       now
+      };
+    }
+
+    // ── 3. Build / update the document ──────────────────────────────────────
+    const updateHistory = existing?.updateHistory
+      ? [...existing.updateHistory, historyEntry]
+      : [historyEntry];
+
+    const doc = {
+      userId,
+      name,
+      birthday:      parsed,
+      lastUpdated:   now,
+      updateHistory
+    };
+
+    await dbBirthdays.set(userId, doc);
+
+    const action = !existing ? 'Created' : (historyEntry.type === 'birthday_change' ? 'Date changed' : 'Updated');
+    printLog('success', `[BIRTHDAY] 🎂 ${action} birthday for ${name} (${parsed.displayDate})`);
     return true;
+
   } catch (e) {
     printLog('error', `[BIRTHDAY] saveBirthdayData error: ${e.message}`);
     return false;
   }
 }
 
-async function getBirthdayData(userId) {
+async function getTodaysBirthdays() {
   try {
-    const birthdays = await getAllBirthdays();
-    return birthdays[userId] || null;
-  } catch (e) {
-    return null;
-  }
-}
-
-async function getTodaysBirthdays() { /* unchanged – uses getAllBirthdays */ 
-  try {
-    const now = moment.tz(TIMEZONE);
+    const now       = moment.tz(TIMEZONE);
     const searchKey = `${String(now.month() + 1).padStart(2, '0')}-${String(now.date()).padStart(2, '0')}`;
     const birthdays = await getAllBirthdays();
     return Object.values(birthdays).filter(b => b.birthday?.searchKey === searchKey);
-  } catch (e) { return []; }
+  } catch (e) {
+    return [];
+  }
 }
 
-async function getUpcomingBirthdays(daysAhead) { /* unchanged */ 
+async function getUpcomingBirthdays(daysAhead) {
   try {
-    const target = moment.tz(TIMEZONE).add(daysAhead, 'days');
+    const target    = moment.tz(TIMEZONE).add(daysAhead, 'days');
     const searchKey = `${String(target.month() + 1).padStart(2, '0')}-${String(target.date()).padStart(2, '0')}`;
     const birthdays = await getAllBirthdays();
     return Object.values(birthdays).filter(b => b.birthday?.searchKey === searchKey);
-  } catch (e) { return []; }
+  } catch (e) {
+    return [];
+  }
 }
 
 async function hasWishedToday(userId) {
   try {
     const today = moment.tz(TIMEZONE).format('YYYY-MM-DD');
-    const log = await dbWishesLog.get('log') || {};
+    const log   = await dbWishesLog.get('log') || {};
     return !!(log[today]?.[userId]);
-  } catch (e) { return false; }
+  } catch (e) {
+    return false;
+  }
 }
 
 async function markWishedToday(userId, name, successfulSends) {
   try {
     const today = moment.tz(TIMEZONE).format('YYYY-MM-DD');
-    const log = await dbWishesLog.get('log') || {};
+    const log   = await dbWishesLog.get('log') || {};
     if (!log[today]) log[today] = {};
     log[today][userId] = { name, timestamp: new Date().toISOString(), successfulSends };
     await dbWishesLog.set('log', log);
@@ -184,12 +257,14 @@ async function hasReminderSent(reminderKey) {
   try {
     const log = await dbRemindersLog.get('log') || {};
     return !!log[reminderKey];
-  } catch (e) { return false; }
+  } catch (e) {
+    return false;
+  }
 }
 
 async function markReminderSent(reminderKey, userId, daysAhead) {
   try {
-    const log = await dbRemindersLog.get('log') || {};
+    const log       = await dbRemindersLog.get('log') || {};
     log[reminderKey] = { userId, daysAhead, timestamp: new Date().toISOString() };
     await dbRemindersLog.set('log', log);
   } catch (e) {}
@@ -198,25 +273,35 @@ async function markReminderSent(reminderKey, userId, daysAhead) {
 async function runCleanup() {
   try {
     const cutoff = moment.tz(TIMEZONE).subtract(365, 'days');
+
+    // Clean wish log
     const wishLog = await dbWishesLog.get('log') || {};
     let wishCleaned = 0;
     for (const date of Object.keys(wishLog)) {
-      if (moment.tz(date, TIMEZONE).isBefore(cutoff)) { delete wishLog[date]; wishCleaned++; }
+      if (moment.tz(date, TIMEZONE).isBefore(cutoff)) {
+        delete wishLog[date];
+        wishCleaned++;
+      }
     }
     if (wishCleaned > 0) await dbWishesLog.set('log', wishLog);
 
+    // Clean reminder log
     const remLog = await dbRemindersLog.get('log') || {};
     let remCleaned = 0;
     for (const key of Object.keys(remLog)) {
       const dateMatch = key.match(/^(\d{4}-\d{2}-\d{2})/);
-      if (dateMatch && moment.tz(dateMatch[1], TIMEZONE).isBefore(cutoff)) { delete remLog[key]; remCleaned++; }
+      if (dateMatch && moment.tz(dateMatch[1], TIMEZONE).isBefore(cutoff)) {
+        delete remLog[key];
+        remCleaned++;
+      }
     }
     if (remCleaned > 0) await dbRemindersLog.set('log', remLog);
+
+    printLog('info', `[BIRTHDAY] Cleanup done — wishes: ${wishCleaned}, reminders: ${remCleaned}`);
   } catch (e) {
     printLog('error', `[BIRTHDAY] Cleanup error: ${e.message}`);
   }
 }
-
 
 // ==================== AUTH — mirrors antilink.js exactly ====================
 /**
