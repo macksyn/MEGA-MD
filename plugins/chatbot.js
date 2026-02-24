@@ -492,6 +492,7 @@ function isGoodResponse(text, userMessage) {
     // Prompt leakage — response starts with one of our own instruction headers
     // Note: colon must be inside each option, not outside the group
     if (/^(ABOUT THEM:|RECENT:|Vibe:|Earlier:|Chat:|Now:|DIALECT:|TONE:)/i.test(t)) return false;
+    if (/\[(?:[NFAJITM]:\s*\S[^\]]*){1,}\]/.test(t)) return false;
 
     // Echo — AI returned the user's exact message back verbatim
     if (userMessage && t.toLowerCase().trim() === userMessage.toLowerCase().trim()) return false;
@@ -566,6 +567,7 @@ async function getAIResponse(userMessage, senderId) {
 
 function cleanResponse(text) {
     let out = text.trim()
+        .replace(/\[[NFAJITM]:[^\]]*\]/g, '')
         // Emote words → emojis
         .replace(/\bwinks?\b/gi,                '😉')
         .replace(/\beye[\s-]?roll(s|ing)?\b/gi, '🙄')
