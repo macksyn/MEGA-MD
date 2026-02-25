@@ -197,9 +197,11 @@ async function initializeSession() {
     }
 }
 
-server.listen(PORT, () => {
-    printLog('success', `Server listening on port ${PORT}`);
-});
+if (!server.listening) {
+    server.listen(PORT, () => {
+        printLog('success', `Server listening on port ${PORT}`);
+    });
+}
 
 async function startQasimDev() {
     try {
@@ -682,7 +684,10 @@ fs.watchFile(file, () => {
     fs.unwatchFile(file);
     printLog('info', 'index.js updated, reloading...');
     delete require.cache[file];
-    require(file);
-});
 
+    // Close the HTTP server first so the re-required file can re-listen
+    server.close(() => {
+        require(file);
+    });
+});
 
