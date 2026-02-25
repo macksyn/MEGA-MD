@@ -18,6 +18,7 @@
 
 const fetch = require('node-fetch');
 const { createStore } = require('../lib/pluginStore');
+const store = require('../lib/lightweight_store');
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 const db         = createStore('chatbot');
@@ -492,7 +493,6 @@ function isGoodResponse(text, userMessage) {
     // Prompt leakage — response starts with one of our own instruction headers
     // Note: colon must be inside each option, not outside the group
     if (/^(ABOUT THEM:|RECENT:|Vibe:|Earlier:|Chat:|Now:|DIALECT:|TONE:)/i.test(t)) return false;
-    if (/\[(?:[NFAJITM]:\s*\S[^\]]*){1,}\]/.test(t)) return false;
 
     // Echo — AI returned the user's exact message back verbatim
     if (userMessage && t.toLowerCase().trim() === userMessage.toLowerCase().trim()) return false;
@@ -567,7 +567,6 @@ async function getAIResponse(userMessage, senderId) {
 
 function cleanResponse(text) {
     let out = text.trim()
-        .replace(/\[[NFAJITM]:[^\]]*\]/g, '')
         // Emote words → emojis
         .replace(/\bwinks?\b/gi,                '😉')
         .replace(/\beye[\s-]?roll(s|ing)?\b/gi, '🙄')
@@ -639,10 +638,88 @@ function isBotAddressed(message, sock, userMessage) {
     }
 }
 
+// ── Resolve @mention JIDs to real display names ───────────────────────────────
+async function resolveMentions(sock, chatId, message, text) {
+    try {
+        const msg = message.message || {};
+        const ctx =
+            msg.extendedTextMessage?.contextInfo ||
+            msg.imageMessage?.contextInfo        ||
+            msg.videoMessage?.contextInfo        ||
+            msg.contextInfo                      || {};
+
+        const mentionedJids = ctx.mentionedJid || [];
+        if (!mentionedJids.length) return text;
+
+        // Build a num→name map for every mentioned JID
+        const nameMap = {};
+
+        // Fetch group roster once (gives us participant IDs + lids)
+        let participants = [];
+        try {
+            const meta = await sock.groupMetadata(chatId);
+            participants = meta.participants || [];
+        } catch { /* non-fatal */ }
+
+        for (const jid of mentionedJids) {
+            const num = jid.split(/[:@]/)[0]; // pure digits
+
+            // 1. Try store.contacts (populated automatically by Baileys events)
+            //    Contacts can be keyed as @s.whatsapp.net OR @lid
+            const contact =
+                store.contacts[`${num}@s.whatsapp.net`] ||
+                store.contacts[`${num}@lid`]            ||
+                store.contacts[jid]                     || null;
+
+            if (contact?.name || contact?.notify) {
+                nameMap[num] = contact.notify || contact.name;
+                continue;
+            }
+
+            // 2. Try matching against group participant list by number or lid
+            const participant = participants.find(p => {
+                const pNum = p.id?.split(/[:@]/)[0];
+                const pLid = (p.lid || '').split(/[:@]/)[0];
+                return pNum === num || pLid === num;
+            });
+
+            if (participant) {
+                // Re-check store with the participant's real JID (may differ from mention JID)
+                const pc =
+                    store.contacts[participant.id]  ||
+                    store.contacts[participant.lid] || {};
+                nameMap[num] = pc.notify || pc.name || num;
+            } else {
+                nameMap[num] = num; // last resort — raw number
+            }
+        }
+
+        // Substitute every @<digits> token in the text
+        let resolved = text;
+        for (const jid of mentionedJids) {
+            const num = jid.split(/[:@]/)[0];
+            resolved = resolved.replace(new RegExp(`@${num}`, 'g'), `@${nameMap[num] || num}`);
+        }
+
+        return resolved;
+
+    } catch (err) {
+        console.warn('[resolveMentions] Failed:', err.message);
+        return text; // always return original on error
+    }
+}
+
 // ── Core onMessage handler ────────────────────────────────────────────────────
 async function handleChatbotMessage(sock, message, context) {
     const chatId   = context?.chatId || message.key.remoteJid;
     const senderId = message.key.participant || message.key.remoteJid;
+
+    // Cache the sender's push name into store.contacts so resolveMentions can find it later
+    if (message.pushName && senderId) {
+    const key = senderId.includes('@') ? senderId : `${senderId}@s.whatsapp.net`;
+    if (!store.contacts[key]) store.contacts[key] = {};
+    store.contacts[key].notify = message.pushName;
+}
 
     if (!enabledGroups.has(chatId)) return;
 
@@ -667,8 +744,13 @@ async function handleChatbotMessage(sock, message, context) {
         return;
     }
 
-    const cleanedMessage = userMessage
+    // Resolve all @mentions to real names first
+    const resolvedMessage = await resolveMentions(sock, chatId, message, userMessage);
+
+    // Strip only the bot's own @mention, keep everyone else's resolved name
+    const cleanedMessage = resolvedMessage
         .replace(new RegExp(`@${botNumber}`, 'g'), '')
+        .replace(/\s{2,}/g, ' ')
         .trim();
 
     if (!cleanedMessage) return;
@@ -696,7 +778,7 @@ async function handleChatbotMessage(sock, message, context) {
         const response = await getAIResponse(cleanedMessage, senderId);
         if (!response) {
             await sock.sendMessage(chatId, {
-                text: "My brain went on a quick vacation 😅 Try again?",
+                text: "My brain went on a quick vacation 😅 Give me a moment?",
             }, { quoted: message });
             return;
         }
