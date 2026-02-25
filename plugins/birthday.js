@@ -573,7 +573,6 @@ async function runMissedTasks(sock) {
 
 async function onLoad(sock) {
   await loadSettings();
-  startScheduler(sock);
   await runMissedTasks(sock);
   bus.on('attendance:birthday', async (payload) => {
     try {
@@ -598,6 +597,14 @@ async function onLoad(sock) {
   });
 
   printLog('info', '[BIRTHDAY] ✅ Now listening for attendance:birthday events');
+
+  // Wrap scheduler so failures don't kill the listener
+  try {
+    startScheduler(sock);
+    await runMissedTasks(sock);
+  } catch (err) {
+    printLog('error', `[BIRTHDAY] Scheduler failed (non-fatal): ${err.message}`);
+  }
 }
 
 // ==================== COMMAND HANDLER ====================
