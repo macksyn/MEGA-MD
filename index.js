@@ -57,7 +57,14 @@ store.readFromFile();
 setInterval(() => store.writeToFile(), settings.storeWriteInterval || 10000);
 
 commandHandler.loadCommands();
-// console.log(chalk.greenBright(`✅ Loaded ${commandHandler.commands.size} Plugins`));
+
+// ── GLOBAL SOCKET REFERENCE ─────────────────────────────────────────────────
+// This is the single source of truth for the active connection.
+// Any code that needs to restart/close the bot uses this.
+global.QasimDevSocket = null;
+let isConnecting = false;        // prevent concurrent connection attempts
+let reconnectTimer = null;       // so we can cancel a pending reconnect
+// ────────────────────────────────────────────────────────────────────────────
 
 setInterval(() => {
     if (global.gc) {
@@ -70,7 +77,7 @@ setInterval(() => {
     const used = process.memoryUsage().rss / 1024 / 1024;
     if (used > 400) {
         console.log(chalk.yellow('⚠️ RAM too high (>400MB), restarting bot...'));
-        process.exit(1);
+        gracefulShutdown('RAM_LIMIT', true); // restart after shutdown
     }
 }, 30_000);
 
@@ -99,18 +106,58 @@ const question = (text) => {
     }
 };
 
-process.on('exit', () => {
-    if (rl && !rl.closed) {
-        rl.close();
-    }
-});
+// ── GRACEFUL SHUTDOWN ────────────────────────────────────────────────────────
+/**
+ * Close the WhatsApp socket cleanly BEFORE the process exits.
+ * This tells WhatsApp's servers the session ended intentionally,
+ * preventing "session clash" on the next startup.
+ *
+ * @param {string}  reason    - label for logs
+ * @param {boolean} restart   - if true, spawn a fresh connection after closing
+ */
+async function gracefulShutdown(reason = 'SHUTDOWN', restart = false) {
+    printLog('warning', `Graceful shutdown initiated: ${reason}`);
 
-process.on('SIGINT', () => {
+    // Cancel any pending reconnect timer so we don't race
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
+
+    // Close the WA socket if it's open
+    if (global.QasimDevSocket) {
+        try {
+            printLog('info', 'Closing WhatsApp socket...');
+            // ev.removeAllListeners() stops the 'connection.update' handler
+            // from triggering another reconnect loop when we close the socket.
+            global.QasimDevSocket.ev.removeAllListeners();
+            global.QasimDevSocket.end(new Error('Graceful shutdown'));
+        } catch (e) {
+            printLog('error', `Error closing socket: ${e.message}`);
+        }
+        global.QasimDevSocket = null;
+        // Give Baileys a moment to flush the close frame to WA servers
+        await delay(2000);
+    }
+
+    // Persist store data
+    await store.writeToFile();
+
     if (rl && !rl.closed) {
         rl.close();
+        rl = null;
     }
-    process.exit(0);
-});
+
+    pluginLoader.stop();
+
+    if (restart) {
+        printLog('info', 'Restarting connection in 3 seconds...');
+        await delay(3000);
+        isConnecting = false;
+        startQasimDev();
+    }
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 function ensureSessionDirectory() {
     const sessionPath = path.join(__dirname, 'session');
@@ -204,6 +251,13 @@ if (!server.listening) {
 }
 
 async function startQasimDev() {
+    // Prevent two concurrent connection attempts
+    if (isConnecting) {
+        printLog('warning', 'Connection attempt already in progress, skipping.');
+        return;
+    }
+    isConnecting = true;
+
     try {
         let { version, isLatest } = await fetchLatestBaileysVersion();
         
@@ -245,6 +299,10 @@ async function startQasimDev() {
             connectTimeoutMs: 60000,
             keepAliveIntervalMs: 10000,
         });
+
+        // ── Store the active socket globally ─────────────────────────────────
+        global.QasimDevSocket = QasimDev;
+        // ─────────────────────────────────────────────────────────────────────
 
         const originalSendPresenceUpdate = QasimDev.sendPresenceUpdate;
         const originalReadMessages = QasimDev.readMessages;
@@ -467,6 +525,9 @@ async function startQasimDev() {
             }
             
             if (connection == "open") {
+                // Mark that we are no longer in the "connecting" phase
+                isConnecting = false;
+
                 printLog('success', 'Bot connected successfully!');
                 const { startAutoBio } = require('./plugins/setbio');
                 startAutoBio(QasimDev); 
@@ -500,7 +561,7 @@ async function startQasimDev() {
                     printLog('error', `Failed to send connection message: ${error.message}`);
                 }
 
-                 await delay(1999);
+                await delay(1999);
                 console.log(chalk.yellow(`\n\n                  ${chalk.bold.blue(`[ ${global.botname || 'Groq-AI'} ]`)}\n\n`));
                 console.log(chalk.cyan(`< ================================================== >`));
                 console.log(chalk.magenta(`\n${global.themeemoji || '•'} YT CHANNEL: Gist HQ`));
@@ -516,10 +577,13 @@ async function startQasimDev() {
             }
             
             if (connection === 'close') {
-                const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 
                 printLog('error', `Connection closed - Status: ${statusCode}`);
+
+                // Reset the connecting flag so the next attempt can proceed
+                isConnecting = false;
                 
                 if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                     try {
@@ -528,12 +592,20 @@ async function startQasimDev() {
                     } catch (error) {
                         printLog('error', `Error deleting session: ${error.message}`);
                     }
+                    // Don't reconnect on logout — the session is gone
+                    return;
                 }
                 
                 if (shouldReconnect) {
+                    // ── KEY FIX: use a timer so we don't call startQasimDev()
+                    // from within a connection.update handler of the socket
+                    // we're about to abandon. The timer gives the old socket
+                    // time to clean up fully before we open a new one.
                     printLog('connection', 'Reconnecting in 5 seconds...');
-                    await delay(5000);
-                    startQasimDev();
+                    reconnectTimer = setTimeout(() => {
+                        reconnectTimer = null;
+                        startQasimDev();
+                    }, 5000);
                 }
             }
         });
@@ -558,13 +630,17 @@ async function startQasimDev() {
     } catch (error) {
         printLog('error', `Error in startQasimDev: ${error.message}`);
         
+        isConnecting = false;
+
         if (rl && !rl.closed) {
             rl.close();
             rl = null;
         }
         
-        await delay(5000);
-        startQasimDev();
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            startQasimDev();
+        }, 5000);
     }
 }
 
@@ -614,7 +690,6 @@ setInterval(() => {
       });
     }
   });
-//  console.log('🧹 Temp folder auto-cleaned');
 }, 1 * 60 * 60 * 1000);
 
 const folders = [
@@ -655,20 +730,33 @@ folders.forEach(folder => {
     });
 });
 
-/**
-* console.log(chalk.greenBright(`✅ OK files: ${okFiles}`));
-* console.log(chalk.redBright(`❌Files with errors: ${errorFiles}\n`));
-*/
+// ── PROCESS SIGNAL HANDLERS ───────────────────────────────────────────────────
+// These ensure the WA socket is ALWAYS closed before the process exits,
+// regardless of what caused the exit (SIGINT, SIGTERM, update command, etc.)
 
 process.on('uncaughtException', (err) => {
     printLog('error', `Uncaught Exception: ${err.message}`);
     console.error(err.stack);
+    // Don't exit — let the process keep running
 });
 
 process.on('unhandledRejection', (err) => {
-    printLog('error', `Unhandled Rejection: ${err.message}`);
-    console.error(err.stack);
+    printLog('error', `Unhandled Rejection: ${err?.message || err}`);
+    if (err?.stack) console.error(err.stack);
 });
+
+process.on('SIGINT', async () => {
+    printLog('warning', 'SIGINT received');
+    await gracefulShutdown('SIGINT', false);
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    printLog('warning', 'SIGTERM received');
+    await gracefulShutdown('SIGTERM', false);
+    process.exit(0);
+});
+// ─────────────────────────────────────────────────────────────────────────────
 
 server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
@@ -679,15 +767,22 @@ server.on('error', (error) => {
     }
 });
 
+// ── HOT-RELOAD FIX ───────────────────────────────────────────────────────────
+// The original code called require(file) inside watchFile without closing
+// the existing WA socket first, creating a ghost connection.
+// Now we close the socket gracefully, THEN reload and re-run main().
 let file = require.resolve(__filename);
-fs.watchFile(file, () => {
+fs.watchFile(file, async () => {
     fs.unwatchFile(file);
     printLog('info', 'index.js updated, reloading...');
+
+    // Close the existing WA connection before reloading
+    await gracefulShutdown('HOT_RELOAD', false);
+
     delete require.cache[file];
 
-    // Close the HTTP server first so the re-required file can re-listen
     server.close(() => {
         require(file);
     });
 });
-
+// ─────────────────────────────────────────────────────────────────────────────

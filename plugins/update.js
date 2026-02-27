@@ -164,11 +164,40 @@ async function updateViaZip(sock, chatId, message, zipOverride) {
   return { copiedFiles: copied };
 }
 
+/**
+ * Cleanly close the WhatsApp socket before the process restarts.
+ * This is the key fix — the original code called process.exit(0) directly,
+ * leaving the WA session "still connected" on WhatsApp's servers and causing
+ * a session clash on the next startup.
+ */
 async function restartProcess() {
+  const { printLog } = require('../lib/print');
+  const { delay } = require('@whiskeysockets/baileys');
+
+  // ── GRACEFUL SOCKET CLOSE ───────────────────────────────────────────────
+  if (global.QasimDevSocket) {
+    try {
+      printLog('info', '[UPDATE] Closing WhatsApp socket before restart...');
+      global.QasimDevSocket.ev.removeAllListeners();
+      global.QasimDevSocket.end(new Error('Bot restart'));
+      global.QasimDevSocket = null;
+      // Give WA servers 2 s to acknowledge the close frame
+      await delay(2000);
+      printLog('success', '[UPDATE] Socket closed cleanly.');
+    } catch (e) {
+      printLog('error', `[UPDATE] Error closing socket: ${e.message}`);
+    }
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Try PM2 restart first (preferred on Koyeb / server deployments)
   try {
     await run('pm2 restart all');
-    return;
+    return; // PM2 handles the restart; we never reach exit()
   } catch {}
+
+  // Fall back to process exit — Koyeb/Railway will restart the container
+  printLog('info', '[UPDATE] Exiting process for platform restart...');
   setTimeout(() => {
     process.exit(0);
   }, 500);
@@ -241,12 +270,17 @@ module.exports = {
         changesSummary += `\n\n🔖 Version: ${v}`;
       } catch {}
       
+      // ── Send the final message BEFORE closing the socket ──────────────────
+      // This ensures the user receives the confirmation before we disconnect.
       await sock.sendMessage(chatId, { 
         text: changesSummary + '\n\n♻️ Restarting bot...',
         ...channelInfo
       }, { quoted: message });
       
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Brief pause so the message is delivered
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      // Now close socket cleanly and restart
       await restartProcess();
       
     } catch (err) {
