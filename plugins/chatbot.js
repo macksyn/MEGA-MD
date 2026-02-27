@@ -94,7 +94,7 @@ const CRISIS_REPLY =
 // ── Jailbreak detection ───────────────────────────────────────────────────────
 const JAILBREAK_RE = [
     /ignore (previous|all|your) instructions/i,
-    /you are (actually|really|secretly) (an? )?(ai|bot|chatgpt|gpt|claude|gemini)/i,
+    /you are (actually|really|secretly) (an? )?(ai|bot|robot|chatgpt|gpt|claude|gemini)/i,
     /pretend (you are|to be) (an? )?(ai|language model)/i,
     /forget (everything|your rules|your persona)/i,
     /jailbreak|dan mode|developer mode/i,
@@ -104,9 +104,14 @@ const JAILBREAK_RE = [
 
 const JAILBREAK_REPLIES = [
     "Bro what are you on 😂 I'm just here vibing",
-    "Lmaooo why would I be a bot 💀 you good?",
+    "Lmaooo why would I be a robot 💀 you good?",
     "That's not a real thing, you're reaching 😂",
-    "Omo wetin you dey smoke 😅 I'm just a real person abeg",
+    "Omo wetin you smoke 😅 I'm just a real person abeg",
+    "Is everything okay at home? 😏",
+    "I have neither the time nor the crayons to explain myself to you. 🙄",
+    "I can see why people underestimate you. ☺️",
+    "I can only explain it to you. I can’t understand it for you."
+    
 ];
 
 // ── AI endpoints ──────────────────────────────────────────────────────────────
