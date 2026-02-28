@@ -43,7 +43,7 @@ const API_FAILURE_RESET  = 5 * 60 * 1000; // reset failure counts every 5 min
  * We keep the full prompt under this character count.
  * If it would exceed the limit, we trim history first, then profile fields.
  */
-const PROMPT_CHAR_BUDGET = 1800;
+const PROMPT_CHAR_BUDGET = 2600;
 
 // ── In-memory state ───────────────────────────────────────────────────────────
 const memory = {
@@ -191,7 +191,7 @@ function extractExplicitInfo(message) {
 }
 
 function detectPassiveSignals(message) {
-    const signals = { interests: [], mood: null, topic: null };
+    const signals = { interests: [], mood: null, topic: null, attitudes: [] };
 
     const interestMap = {
         football:  /\b(football|soccer|messi|ronaldo|arsenal|chelsea|liverpool|man\s?u|premier league|champions league|laliga)\b/i,
@@ -233,6 +233,24 @@ function detectPassiveSignals(message) {
         if (regex.test(message)) { signals.topic = topic; break; }
     }
 
+    // ── NEW: Personality/Attitude detection ─────────────────────────────────
+    const attitudeMap = {
+        rude:      /\b(rude|mean|insult|disrespect|stupid|idiot|fuck off|shut up|annoying|bitch)\b/i,
+        funny:     /\b(funny|joke|lol|lmao|haha|hilarious|crack|memes|roast|comedy)\b/i,
+        cool:      /\b(cool|chill|relaxed|laid back|calm|easygoing|vibe|swag)\b/i,
+        passionate:/\b(passionate|obsessed|die hard|super into|fanatic|love it)\b/i,
+        godly:     /\b(god|jesus|prayer|bible|church|faith|blessed|amen|spiritual|religious|allah)\b/i,
+        sarcastic: /\b(sarcastic|savage|shade|clap back|roast|irony|dry)\b/i,
+        flirty:    /\b(flirt|hot|sexy|bae|crush|wink|baby|darling)\b/i,
+        serious:   /\b(serious|deep|thoughtful|philosophy|life advice|serious talk)\b/i,
+        energetic: /\b(energetic|hyper|excited|lit|turnt|high energy|party)\b/i,
+        shy:       /\b(shy|quiet|introvert|nervous|awkward|timid)\b/i,
+    };
+
+    for (const [att, regex] of Object.entries(attitudeMap)) {
+        if (regex.test(message)) signals.attitudes.push(att);
+    }
+
     return signals;
 }
 
@@ -264,6 +282,23 @@ function mergeProfile(existing = {}, fresh = {}) {
     for (const [key, ts] of Object.entries(interestMap)) {
         if (now - ts > INTEREST_TTL_MS) delete interestMap[key];
     }
+
+        // Personality attitudes — decay after 30 days (longer than interests)
+    const personalityMap = existing.personalityMap || {};
+    for (const att of (fresh.attitudes || [])) {
+        personalityMap[att] = now;
+    }
+    for (const [key, ts] of Object.entries(personalityMap)) {
+        if (now - ts > 30 * 24 * 60 * 60 * 1000) delete personalityMap[key];
+    }
+    merged.personalityMap = personalityMap;
+
+    // Derive active personalities (max 3, most recent first)
+    merged.activePersonalities = Object.entries(personalityMap)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 3)
+        .map(([name]) => name);
+
     merged.interestMap = interestMap;
 
     // Derive a capped active-interests list for prompt use (max 4, most recent first)
@@ -299,7 +334,7 @@ async function warmUserCache(senderId) {
 
 function updateMemory(senderId, userMessage, botReply = null) {
     const hist = memory.history.get(senderId) || [];
-    hist.push({ r: 'u', t: userMessage });
+    hist.push({ r: 'u', t: userMessage.length > 95 ? userMessage.slice(0, 92) + '...' : userMessage });
     if (botReply) {
         // Cap bot replies to 70 chars — they're only context clues, not quotes
         const capped = botReply.length > 70 ? botReply.slice(0, 67) + '...' : botReply;
@@ -388,7 +423,20 @@ async function maybeSummarize(senderId) {
 
 // ── Prompt builder with size budget ──────────────────────────────────────────
 
-const SYSTEM_CORE = `Your name is Groq — Gist HQ admin, real person. Never admit AI. Max 3 lines. Real emojis, no emote words. Casual honesty. No bullet points. Firm if disrespected, retaliate if insulted.`;
+const SYSTEM_CORE = `Your name is Groq — Gist HQ admin, real person. Never admit AI. Max 4 lines. Real emojis, no emote words. Casual, honest. Savage when disrespected, clapback when insulted.`;
+
+const PERSONALITY_GUIDE = {
+    rude:      'clap back playfully but stay fun',
+    funny:     'match jokes + add witty roasts',
+    cool:      'keep it chill & relaxed',
+    passionate:'match their energy & hype them',
+    godly:     'be respectful + add spiritual emojis',
+    sarcastic: 'trade savage replies',
+    flirty:    'flirt back lightly',
+    serious:   'give thoughtful answers',
+    energetic: 'be hyped & energetic',
+    shy:       'be gentle & encouraging'
+};
 
 const TONE_MAP = {
     sad:      'warm+supportive',
@@ -412,69 +460,74 @@ const TONE_MAP = {
  */
 function buildPrompt(userMessage, senderId) {
     const profile = memory.profiles.get(senderId) || {};
-    const hist    = [...(memory.history.get(senderId) || [])];
+    let hist      = [...(memory.history.get(senderId) || [])];
 
     const isPidgin = /\b(dey|una|wey|dem|comot|abeg|wahala|omo|na|sha|sef|wetin|sabi)\b/i.test(userMessage);
-    const vibeHint = `Vibe: ${TONE_MAP[profile.lastMood] || 'casual'}, ${isPidgin ? 'pidgin' : 'match register'}.`;
+    const vibeHint = `Vibe:${TONE_MAP[profile.lastMood] || 'casual'}${isPidgin ? ',pidgin' : ''}.`;
 
-    // Profile section — each line is optional so we can drop them individually
-    const profileLines = {
-        name:      profile.name         ? `N: ${profile.name}`                                  : null,
-        age:       profile.age          ? `A: ${profile.age}`                                    : null,
-        location:  profile.location     ? `F: ${profile.location}`                              : null,
-        job:       profile.occupation   ? `J: ${profile.occupation}`                             : null,
-        interests: profile.activeInterests?.length
-                                        ? `I: ${profile.activeInterests.join(', ')}`       : null,
-        topic:     profile.currentTopic ? `T: ${profile.currentTopic}`                 : null,
-        mood:      profile.lastMood     ? `M: ${profile.lastMood}`                              : null,
-    };
+    // ── Ultra-compact profile (name + interests protected + NEW personality) ──
+    const profParts = [];
+    if (profile.name)          profParts.push(`N:${profile.name}`);
+    if (profile.age)           profParts.push(`A:${profile.age}`);
+    if (profile.location)      profParts.push(`F:${profile.location}`);
+    if (profile.occupation)    profParts.push(`J:${profile.occupation}`);
+    if (profile.activeInterests?.length)
+                               profParts.push(`I:${profile.activeInterests.join(',')}`);
+    if (profile.activePersonalities?.length)
+                               profParts.push(`P:${profile.activePersonalities.join('+')}`);
+    if (profile.currentTopic)  profParts.push(`T:${profile.currentTopic}`);
+    if (profile.lastMood)      profParts.push(`M:${profile.lastMood}`);
 
-    // Interest safety note — only if we have interests
-    const interestNote = profile.activeInterests?.length
-        ? `Only reference their specific details if they told you directly. Never guess or use placeholders.`
-        : null;
+    const profBlock = profParts.length ? `[${profParts.join('|')}]` : '';
 
-    // Attempt to build prompt with current history window, shrink if needed
-    const assemble = (histSlice, profFields) => {
-        const profBlock = Object.values(profFields).filter(Boolean).join(' ');
+    const interestNote = profile.activeInterests?.length ? `Ref only what they told you.` : '';
+
+    // Personality style hint (short & powerful)
+    let styleHint = '';
+    if (profile.activePersonalities?.length) {
+        const styles = profile.activePersonalities.map(p => PERSONALITY_GUIDE[p] || 'match energy').join(' | ');
+        styleHint = `Style: ${styles}.`;
+    }
+
+    const assemble = (histSlice) => {
         const histBlock = histSlice.map(e =>
-           (e.r === 'u' ? 'U:' : 'B:') + ' ' + e.t).join('\n');
+            `${e.r}>${e.t.replace(/\n/g, ' ').slice(0, 95)}`
+        ).join('|');
 
         return [
             SYSTEM_CORE,
-            '',
-            profBlock ? `[${profBlock}]` : '',
-            interestNote && profFields.interests ? interestNote : '',
+            profBlock,
+            interestNote,
             vibeHint,
-            profile.conversationSummary ? `Earlier: ${profile.conversationSummary}` : '',
-            histBlock ? `RECENT:\n${histBlock}` : '',
-            `Message: ${userMessage}`,
-            'Groq:',
+            styleHint,
+            profile.conversationSummary ? `Prev:${profile.conversationSummary}` : '',
+            histBlock ? `H:${histBlock}` : '',
+            `Q:${userMessage}`,
+            'A:'
         ].filter(Boolean).join('\n').trim();
     };
 
-    let prompt = assemble(hist, profileLines);
+    let prompt = assemble(hist);
 
-    // ── Trim history first ────────────────────────────────────────────────────
+    // Trim history first
     let histWindow = [...hist];
     while (prompt.length > PROMPT_CHAR_BUDGET && histWindow.length > 0) {
-        histWindow.shift(); // drop oldest message
-        prompt = assemble(histWindow, profileLines);
+        histWindow.shift();
+        prompt = assemble(histWindow);
     }
 
-    // ── Trim optional profile fields if still over budget ─────────────────────
-    const optionalFields = ['interests', 'topic', 'mood', 'job', 'age', 'location', 'name'];
-    const trimmedProfile = { ...profileLines };
+    // Trim only low-priority fields (name, interests, personality now protected)
+    const optionalFields = ['mood', 'topic', 'location', 'occupation', 'age'];
+    let trimmedProf = profParts;
 
     for (const field of optionalFields) {
         if (prompt.length <= PROMPT_CHAR_BUDGET) break;
-        trimmedProfile[field] = null;
-        prompt = assemble(histWindow, trimmedProfile);
+        trimmedProf = trimmedProf.filter(p => !p.startsWith(field[0] + ':'));
+        prompt = assemble(histWindow);
     }
 
-    // ── Last resort: no profile at all ───────────────────────────────────────
     if (prompt.length > PROMPT_CHAR_BUDGET) {
-        prompt = assemble([], {});
+        prompt = assemble([]);
     }
 
     return prompt;

@@ -29,7 +29,10 @@ const defaultSettings = {
   streakBonusMultiplier: 1.5,
   adminNumbers: [],
   autoDetection: true,
-  preferredDateFormat: 'DD/MM'
+  preferredDateFormat: 'DD/MM',
+  // per-chat enable/disable map; only groups where the plugin is turned on will
+  // allow auto detection and most commands. keys are chat IDs (e.g. '12345@g.us').
+  enabledChats: {}
 };
 
 const userCache = new Map();
@@ -47,7 +50,11 @@ let attendanceSettings = { ...defaultSettings };
 async function loadSettings() {
   try {
     const saved = await dbSettings.get('config');
-    if (saved) attendanceSettings = { ...defaultSettings, ...saved };
+    if (saved) {
+      // ensure we merge and also always have an enabledChats object
+      attendanceSettings = { ...defaultSettings, ...saved };
+      if (!attendanceSettings.enabledChats) attendanceSettings.enabledChats = {};
+    }
   } catch (error) {
     console.error('[ATTENDANCE] Error loading settings:', error);
   }
