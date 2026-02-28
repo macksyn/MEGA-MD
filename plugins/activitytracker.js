@@ -336,7 +336,8 @@ async function getInactiveMembers(groupId, limit = 10) {
       return { ...rec, totalMessages, points };
     }));
 
-    return enriched.sort((a, b) => a.points - b.points).slice(0, limit);
+    // In getInactiveMembers, sort by lastSeen ascending (oldest first) instead
+    return enriched.sort((a, b) => new Date(a.lastSeen) - new Date(b.lastSeen)).slice(0, limit);
   } catch (error) {
     console.error('[ACTIVITY] getInactiveMembers error:', error.message);
     return [];
@@ -414,7 +415,7 @@ async function recordAttendance(userId, groupId) {
 // ===== PLUGIN EXPORT =====
 
 module.exports = {
-  command: '_activitytracker',
+  command: 'activitytracker',
   category: 'utility',
   description: 'Tracks per-type activity (messages, stickers, photos …) in enabled groups',
 
