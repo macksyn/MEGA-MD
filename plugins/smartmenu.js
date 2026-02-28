@@ -56,7 +56,7 @@ module.exports = {
   category: 'general',
   description: 'Interactive smart menu with live status',
   usage: '.smenu',
-  isPrefixless: true,
+  isPrefixless: false,
 
   async handler(sock, message, args, context = {}) {
     const chatId = context.chatId || message.key.remoteJid;
