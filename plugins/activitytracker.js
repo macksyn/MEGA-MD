@@ -9,11 +9,6 @@
 const moment = require('moment-timezone');
 const { createStore } = require('../lib/pluginStore');
 
-// lightweight_store is optional — only used for getMessageCount fallback.
-// Wrapped in try/catch so a missing / incompatible version never breaks tracking.
-let lwStore = null;
-try { lwStore = require('../lib/lightweight_store'); } catch {}
-
 moment.tz.setDefault('Africa/Lagos');
 
 // ===== STORAGE =====
@@ -50,6 +45,18 @@ function currentMonth() {
 
 function blankStats() {
   return { messages: 0, stickers: 0, videos: 0, voiceNotes: 0, polls: 0, photos: 0, attendance: 0 };
+}
+
+// ===== OPTION 1 FIX: Derive totalMessages from monthly stats =====
+// Replaces safeGetMessageCount(). Sums all message-type stats that were
+// already tracked in our own DB, so the count resets with the month.
+function sumTotalMessages(stats = {}) {
+  return (stats.messages   || 0) +
+         (stats.stickers   || 0) +
+         (stats.videos     || 0) +
+         (stats.voiceNotes || 0) +
+         (stats.polls      || 0) +
+         (stats.photos     || 0);
 }
 
 // ===== TYPE MAPS =====
@@ -191,13 +198,11 @@ async function getActivityStats(userId, groupId, month = null) {
 /**
  * Write updated stats back.
  * We do a full set (not patch) so the record always has every field intact.
- * This is safer than patch when `updates` contains nested objects like `stats`.
  */
 async function updateActivityStats(userId, groupId, updates, month = null) {
   const mon = month || currentMonth();
   const key = statKey(userId, groupId, mon);
   try {
-    // Read current record (already exists — getActivityStats was called first)
     const existing = await dbStats.get(key) || {
       userId, groupId, month: mon,
       stats: blankStats(), points: 0,
@@ -233,33 +238,23 @@ function detectMessageType(message) {
   } catch { return null; }
 }
 
-// ===== SAFE MESSAGE COUNT (lightweight_store optional) =====
-
-async function safeGetMessageCount(groupId, userId) {
-  try {
-    if (typeof lwStore?.getMessageCount === 'function') {
-      const count = await lwStore.getMessageCount(groupId, userId);
-      return count || 0;
-    }
-  } catch {}
-  return 0;
-}
-
 // ===== USER ACTIVITY (consumed by activity.js) =====
 
 async function getUserActivity(userId, groupId, month = null) {
   const mon = month || currentMonth();
   try {
-    const [totalMessages, activity, settings] = await Promise.all([
-      safeGetMessageCount(groupId, userId),
+    const [activity, settings] = await Promise.all([
       getActivityStats(userId, groupId, mon),
       getSettings()
     ]);
 
     if (!activity) return null;
 
-    // Always recalculate points from stored stat counts so the
-    // display is consistent even if point values changed.
+    // Derive totalMessages from monthly stats — resets with the month ✅
+    const totalMessages = sumTotalMessages(activity.stats);
+
+    // Recalculate points from stored stat counts so display is consistent
+    // even if point values changed since the stats were recorded.
     let points = 0;
     for (const [statKey, activityType] of Object.entries(STATS_TYPE_MAP)) {
       points += calculatePoints(activityType, settings) * (activity.stats[statKey] || 0);
@@ -290,14 +285,16 @@ async function getMonthlyLeaderboard(groupId, month = null, limit = 10) {
       r => r.groupId === groupId && r.month === mon
     );
 
-    const enriched = await Promise.all(groupRecords.map(async rec => {
-      const totalMessages = await safeGetMessageCount(groupId, rec.userId);
+    const enriched = groupRecords.map(rec => {
+      // Derive totalMessages from monthly stats — resets with the month ✅
+      const totalMessages = sumTotalMessages(rec.stats || {});
+
       let points = 0;
       for (const [key, type] of Object.entries(STATS_TYPE_MAP)) {
         points += calculatePoints(type, settings) * (rec.stats?.[key] || 0);
       }
       return { ...rec, totalMessages, points };
-    }));
+    });
 
     return enriched.sort((a, b) => b.points - a.points).slice(0, limit);
   } catch (error) {
@@ -327,16 +324,19 @@ async function getInactiveMembers(groupId, limit = 10) {
       r => r.groupId === groupId && r.month === mon
     );
 
-    const enriched = await Promise.all(groupRecords.map(async rec => {
-      const totalMessages = await safeGetMessageCount(groupId, rec.userId);
+    const enriched = groupRecords.map(rec => {
+      // Derive totalMessages from monthly stats — resets with the month ✅
+      const totalMessages = sumTotalMessages(rec.stats || {});
+
       let points = 0;
       for (const [key, type] of Object.entries(STATS_TYPE_MAP)) {
         points += calculatePoints(type, settings) * (rec.stats?.[key] || 0);
       }
       return { ...rec, totalMessages, points };
-    }));
+    });
 
-    // In getInactiveMembers, sort by lastSeen ascending (oldest first) instead
+    // Sort by lastSeen ascending (oldest first) so the limit
+    // captures the truly inactive members, not just low-point ones.
     return enriched.sort((a, b) => new Date(a.lastSeen) - new Date(b.lastSeen)).slice(0, limit);
   } catch (error) {
     console.error('[ACTIVITY] getInactiveMembers error:', error.message);
@@ -415,7 +415,7 @@ async function recordAttendance(userId, groupId) {
 // ===== PLUGIN EXPORT =====
 
 module.exports = {
-  command: 'activitytracker',
+  command: '_activitytracker',
   category: 'utility',
   description: 'Tracks per-type activity (messages, stickers, photos …) in enabled groups',
 
