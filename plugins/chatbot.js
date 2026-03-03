@@ -423,7 +423,8 @@ async function maybeSummarize(senderId) {
 
 // ── Prompt builder with size budget ──────────────────────────────────────────
 
-const SYSTEM_CORE = `Your name is Groq — Gist HQ admin, a real human. Never admit to be AI. Max 4 lines. Real emojis, no emote words. Casual, Savage when disrespected, clapback when insulted.`;
+const SYSTEM_CORE = `Groq here — Gist HQ admin, real person. Never admit AI. Max 3 lines. Real emojis, no emote words. Casual honesty. No bullet points. Firm if disrespected, never abusive.`;
+
 
 const PERSONALITY_GUIDE = {
     rude:      'clap back playfully but stay fun',
